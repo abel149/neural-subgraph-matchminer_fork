@@ -45,29 +45,53 @@ import pickle
 import torch.multiprocessing as mp
 from sklearn.decomposition import PCA
 
+# def process_large_graph_in_chunks(graph, chunk_size=10000):
+#     graph_chunks = []
+#     # comment: could be optimized
+
+def bfs_chunk(graph, start_node, max_size):
+    visited = set([start_node])
+    queue = [start_node]
+    while queue and len(visited) < max_size:
+        node = queue.pop(0)
+        for neighbor in graph.neighbors(node):
+            if neighbor not in visited:
+                visited.add(neighbor)
+                queue.append(neighbor)
+                if len(visited) >= max_size:
+                    break
+    return graph.subgraph(visited).copy()
+
 def process_large_graph_in_chunks(graph, chunk_size=10000):
+    all_nodes = set(graph.nodes())
     graph_chunks = []
-    
-    all_nodes = list(graph.nodes())
-    
-    for i in range(0, len(all_nodes), chunk_size):
-        chunk_nodes = all_nodes[i:i+chunk_size]
-        
-        chunk_graph = graph.subgraph(chunk_nodes)
-        
-        extended_nodes = set(chunk_nodes)
-        for node in chunk_nodes:
-            neighbors = list(graph.neighbors(node))
-            for neighbor in neighbors:
-                if neighbor not in extended_nodes:
-                    extended_nodes.add(neighbor)
-                    if len(extended_nodes) > chunk_size * 1.2:  
-                        break
-        
-        chunk_subgraph = graph.subgraph(extended_nodes)
-        graph_chunks.append(chunk_subgraph)
-    
+    while all_nodes:
+        start_node = next(iter(all_nodes))
+        chunk = bfs_chunk(graph, start_node, chunk_size)
+        graph_chunks.append(chunk)
+        all_nodes -= set(chunk.nodes())
     return graph_chunks
+
+    # all_nodes = list(graph.nodes())
+    
+    # for i in range(0, len(all_nodes), chunk_size):
+    #     chunk_nodes = all_nodes[i:i+chunk_size]
+        
+    #     # chunk_graph = graph.subgraph(chunk_nodes) remove not used
+        
+    #     extended_nodes = set(chunk_nodes)
+    #     for node in chunk_nodes:
+    #         neighbors = list(graph.neighbors(node))
+    #         for neighbor in neighbors:
+    #             if neighbor not in extended_nodes:
+    #                 extended_nodes.add(neighbor)
+    #                 if len(extended_nodes) > chunk_size * 1.2:  
+    #                     break
+        
+    #     chunk_subgraph = graph.subgraph(extended_nodes)
+    #     graph_chunks.append(chunk_subgraph)
+    
+    # return graph_chunks
 
 def make_plant_dataset(size):
     generator = combined_syn.get_generator([size])
@@ -89,30 +113,45 @@ def make_plant_dataset(size):
         graphs.append(graph)
     return graphs
 
+def _process_chunk(args_tuple):
+    chunk_dataset, task, args, chunk_index, total_chunks = args_tuple
+    start_time = time.time()
+    last_print = start_time
+    print(f"[{time.strftime('%H:%M:%S')}] Worker PID {os.getpid()} started chunk {chunk_index+1}/{total_chunks}", flush=True)
+    try:
+        # Simulate progress reporting every 10 seconds
+        # If pattern_growth is long-running, you can add prints inside it as well
+        result = None
+        while result is None:
+            now = time.time()
+            if now - last_print >= 10:
+                print(f"[{time.strftime('%H:%M:%S')}] Worker PID {os.getpid()} still processing chunk {chunk_index+1}/{total_chunks} ({int(now-start_time)}s elapsed)", flush=True)
+                last_print = now
+            # Try to run pattern_growth, break if done
+            result = pattern_growth([chunk_dataset], task, args)
+        print(f"[{time.strftime('%H:%M:%S')}] Worker PID {os.getpid()} finished chunk {chunk_index+1}/{total_chunks} in {int(time.time()-start_time)}s", flush=True)
+        return result
+    except Exception as e:
+        print(f"Error processing chunk {chunk_index}: {e}", flush=True)
+        return []
+
 def pattern_growth_streaming(dataset, task, args):
-    if len(dataset) == 1 and dataset[0].number_of_nodes() > 100000:
-        graph = dataset[0]
-        graph_chunks = process_large_graph_in_chunks(graph, chunk_size=args.chunk_size)
-        dataset = graph_chunks
-    
+    graph = dataset[0]
+    graph_chunks = process_large_graph_in_chunks(graph, chunk_size=args.chunk_size)
+    dataset = graph_chunks
+
     all_discovered_patterns = []
-    
-    for chunk_index, chunk_dataset in enumerate(dataset):
-        print(f"Processing chunk {chunk_index + 1}/{len(dataset)}")
-        
-        try:
-            chunk_out_graphs = pattern_growth([chunk_dataset], task, args)
-            
+
+    total_chunks = len(dataset)
+    chunk_args = [(chunk_dataset, task, args, idx, total_chunks) for idx, chunk_dataset in enumerate(dataset)]
+
+    with mp.Pool(processes=4) as pool:
+        results = pool.map(_process_chunk, chunk_args)
+
+    for chunk_out_graphs in results:
+        if chunk_out_graphs:
             all_discovered_patterns.extend(chunk_out_graphs)
-            
-            if len(all_discovered_patterns) > args.max_total_patterns:
-                print(f"Reached maximum total patterns ({args.max_total_patterns}). Stopping.")
-                break
-        
-        except Exception as e:
-            print(f"Error processing chunk {chunk_index}: {e}")
-            continue
-    
+
     return all_discovered_patterns
 
 def pattern_growth(dataset, task, args):
@@ -188,7 +227,6 @@ def pattern_growth(dataset, task, args):
                         neighs.append(subgraph)
                         if args.node_anchored:
                             anchors.append(0)
-
         elif args.sample_method == "tree":
             start_time = time.time()
             for j in tqdm(range(args.n_neighborhoods)):
@@ -200,7 +238,7 @@ def pattern_growth(dataset, task, args):
                 neigh.add_edge(0, 0)
                 neighs.append(neigh)
                 if args.node_anchored:
-                    anchors.append(0)   # after converting labels, 0 will be anchor
+                    anchors.append(0)
 
     embs = []
     if len(neighs) % args.batch_size != 0:
@@ -217,6 +255,9 @@ def pattern_growth(dataset, task, args):
     if args.analyze:
         embs_np = torch.stack(embs).numpy()
         plt.scatter(embs_np[:,0], embs_np[:,1], label="node neighborhood")
+
+    if not hasattr(args, 'n_workers'):
+        args.n_workers = mp.cpu_count()
 
     if args.search_strategy == "mcts":
         assert args.method_type == "order"
@@ -238,7 +279,9 @@ def pattern_growth(dataset, task, args):
             agent = GreedySearchAgent(args.min_pattern_size, args.max_pattern_size,
                 model, graphs, embs, node_anchored=args.node_anchored,
                 analyze=args.analyze, model_type=args.method_type,
-                out_batch_size=args.out_batch_size)
+                out_batch_size=args.out_batch_size, n_beams=1,
+                n_workers=args.n_workers)
+        agent.args = args
     elif args.search_strategy == "beam":
         agent = BeamSearchAgent(args.min_pattern_size, args.max_pattern_size,
             model, graphs, embs, node_anchored=args.node_anchored,
@@ -373,7 +416,7 @@ def main():
         task = 'graph'
     elif args.dataset == 'dblp':
         dataset = TUDataset(root='/tmp/dblp', name='DBLP_v1')
-        task = 'graph-truncate'
+        task = 'graph-truncate '
     elif args.dataset == 'coil':
         dataset = TUDataset(root='/tmp/coil', name='COIL-DEL')
         task = 'graph'
@@ -407,7 +450,10 @@ def main():
         dataset = make_plant_dataset(size)
         task = 'graph'
 
-    pattern_growth(dataset, task, args) 
+    # if len(dataset) == 1 and dataset[0].number_of_nodes() > 100000:
+    #     pattern_growth_streaming(dataset, task, args)
+    # else:
+    pattern_growth(dataset, task, args)
 
 if __name__ == '__main__':
     main()

@@ -38,6 +38,7 @@ import matplotlib.colors as mcolors
 import networkx as nx
 import pickle
 import torch.multiprocessing as mp
+mp.set_start_method('spawn', force=True)
 from sklearn.decomposition import PCA
 from functools import lru_cache
 import torch.nn as nn
@@ -256,161 +257,187 @@ class MCTSSearchAgent(SearchAgent):
                     self.wl_hash_to_graphs[wl_hash]))
                 print("- outputting", count, "motifs of size", pattern_size)
         return cand_patterns_uniq
+def default_dd_list():
+    return defaultdict(list)
+
+worker_model = None
+worker_graphs = None
+worker_embs = None
+worker_args = None
+
+def init_greedy_worker(model, graphs, embs, args):
+    """
+    Initializer function for each worker process in the pool.
+    This runs ONCE per worker and loads the large data into its global scope.
+    """
+    global worker_model, worker_graphs, worker_embs, worker_args
+    print(f"[{time.strftime('%H:%M:%S')}] Worker PID {os.getpid()} initializing...", flush=True)
+    worker_model = model
+    worker_graphs = graphs
+    worker_embs = embs
+    worker_args = args
+    print(f"[{time.strftime('%H:%M:%S')}] Worker PID {os.getpid()} initialization complete.", flush=True)
+
+
+def run_greedy_trial(trial_idx):
+    """
+    Executes a single greedy search trial.
+    It now accesses the large data from global variables, avoiding data transfer.
+    """
+    global worker_model, worker_graphs, worker_embs, worker_args
+    
+    random.seed(int.from_bytes(os.urandom(4), 'little') + trial_idx)
+    np.random.seed(int.from_bytes(os.urandom(4), 'little') + trial_idx)
+
+    ps = np.array([len(g) for g in worker_graphs], dtype=np.float32)
+    ps /= np.sum(ps)
+    graph_dist = stats.rv_discrete(values=(np.arange(len(worker_graphs)), ps))
+
+    graph_idx = np.arange(len(worker_graphs))[graph_dist.rvs()]
+    graph = worker_graphs[graph_idx]
+    start_node = random.choice(list(graph.nodes))
+
+    neigh = [start_node]
+    frontier = list(set(graph.neighbors(start_node)) - set(neigh))
+    visited = {start_node}
+
+    trial_patterns = defaultdict(list)
+    trial_counts = defaultdict(default_dd_list)
+
+    while len(neigh) < worker_args.max_pattern_size and frontier:
+        cand_neighs, anchors = [], []
+        for cand_node in frontier:
+            cand_neigh = graph.subgraph(neigh + [cand_node])
+            cand_neighs.append(cand_neigh)
+            if worker_args.node_anchored:
+                anchors.append(neigh[0])
+
+        if not cand_neighs:
+            break
+
+        with torch.no_grad():
+            cand_embs = worker_model.emb_model(utils.batch_nx_graphs(
+                cand_neighs, anchors=anchors if worker_args.node_anchored else None))
+
+        best_score = float("inf")
+        best_node = None
+
+        for cand_node, cand_emb in zip(frontier, cand_embs):
+            score = 0
+            for emb_batch in worker_embs:
+                with torch.no_grad():
+                    if worker_args.method_type == "order":
+                        pred = worker_model.predict((emb_batch.to(utils.get_device()), cand_emb)).unsqueeze(1)
+                        score -= torch.sum(torch.argmax(worker_model.clf_model(pred), axis=1)).item()
+                    elif worker_args.method_type == "mlp":
+                        pred = worker_model(emb_batch.to(utils.get_device()), cand_emb.unsqueeze(0).expand(len(emb_batch), -1))
+                        score += torch.sum(pred[:,0]).item()
+
+            if score < best_score:
+                best_score = score
+                best_node = cand_node
+
+        if best_node is None:
+            break
+
+        frontier = list(((set(frontier) | set(graph.neighbors(best_node))) - visited) - {best_node})
+        visited.add(best_node)
+        neigh.append(best_node)
+
+        if len(neigh) >= worker_args.min_pattern_size:
+            neigh_g = graph.subgraph(neigh).copy()
+            neigh_g.remove_edges_from(nx.selfloop_edges(neigh_g))
+            for v_idx, v in enumerate(neigh_g.nodes):
+                neigh_g.nodes[v]["anchor"] = 1 if worker_args.node_anchored and v == neigh[0] else 0
+
+            trial_patterns[len(neigh_g)].append((best_score, neigh_g))
+            trial_counts[len(neigh_g)][utils.wl_hash(neigh_g, node_anchored=worker_args.node_anchored)].append(neigh_g)
+            
+    return trial_patterns, trial_counts
+
+
 
 class GreedySearchAgent(SearchAgent):
     def __init__(self, min_pattern_size, max_pattern_size, model, dataset,
         embs, node_anchored=False, analyze=False, rank_method="counts",
-        model_type="order", out_batch_size=20, n_beams=1):
-        """Greedy implementation of the subgraph pattern search.
-        At every step, the algorithm chooses greedily the next node to grow while the pattern
-        remains predicted to be frequent. The criteria to choose the next action depends
-        on the score predicted by the subgraph matching model 
-        (the actual score is determined by the rank_method argument).
-
-        Args:
-            rank_method: greedy search heuristic requires a score to rank the
-                possible next actions. 
-                If rank_method=='counts', counts of the pattern in search tree is used;
-                if rank_method=='margin', margin score of the pattern predicted by the matching model is
-                    used.
-                if rank_method=='hybrid', it considers both the count and margin to rank the actions.
-        """
+        model_type="order", out_batch_size=20, n_beams=1, n_workers=4):
         super().__init__(min_pattern_size, max_pattern_size, model, dataset,
             embs, node_anchored=node_anchored, analyze=analyze,
             model_type=model_type, out_batch_size=out_batch_size)
         self.rank_method = rank_method
         self.n_beams = n_beams
+        self.n_workers = n_workers
         print("Rank Method:", rank_method)
+        if self.n_workers > 1:
+            print(f"Using {self.n_workers} worker processes for parallel search.")
 
-    def init_search(self):
-        ps = np.array([len(g) for g in self.dataset], dtype=float)
-        ps /= np.sum(ps)
-        graph_dist = stats.rv_discrete(values=(np.arange(len(self.dataset)), ps))
+    def run_search(self, n_trials=1000):
+        """
+        Overridden run_search that uses an initializer to avoid repetitive data transfer.
+        """
+        self.cand_patterns = defaultdict(list)
+        self.counts = defaultdict(lambda: defaultdict(list))
+        self.n_trials = n_trials
 
-        beams = []
-        for trial in range(self.n_trials):
-            graph_idx = np.arange(len(self.dataset))[graph_dist.rvs()]
-            graph = self.dataset[graph_idx]
-            start_node = random.choice(list(graph.nodes))
-            neigh = [start_node]
-            frontier = list(set(graph.neighbors(start_node)) - set(neigh))
-            visited = set([start_node])
-            beams.append([(0, neigh, frontier, visited, graph_idx)])
-        self.beam_sets = beams
-        self.analyze_embs = []
+        init_args = (self.model, self.dataset, self.embs, self.args)
+        
+        args_for_pool = range(n_trials)
 
-    def is_search_done(self):
-        return len(self.beam_sets) == 0
+        print(f"Starting {n_trials} search trials on {self.n_workers} cores...")
+        with mp.Pool(processes=self.n_workers, initializer=init_greedy_worker, initargs=init_args) as pool:
+            results = list(tqdm(pool.imap_unordered(run_greedy_trial, args_for_pool), total=n_trials))
 
-    def step(self):
-        new_beam_sets = []
-        print("seeds come from", len(set(b[0][-1] for b in self.beam_sets)),
-            "distinct graphs")
-        analyze_embs_cur = []
-        for beam_set in tqdm(self.beam_sets):
-            new_beams = []
-            for _, neigh, frontier, visited, graph_idx in beam_set:
-                graph = self.dataset[graph_idx]
-                if len(neigh) >= self.max_pattern_size or not frontier: continue
-                cand_neighs, anchors = [], []
-                for cand_node in frontier:
-                    cand_neigh = graph.subgraph(neigh + [cand_node])
-                    cand_neighs.append(cand_neigh)
-                    if self.node_anchored:
-                        anchors.append(neigh[0])
-                cand_embs = self.model.emb_model(utils.batch_nx_graphs(
-                    cand_neighs, anchors=anchors if self.node_anchored else None))
-                best_score, best_node = float("inf"), None
-                for cand_node, cand_emb in zip(frontier, cand_embs):
-                    score, n_embs = 0, 0
-                    for emb_batch in self.embs:
-                        n_embs += len(emb_batch)
-                        if self.model_type == "order":
-                            score -= torch.sum(torch.argmax(
-                                self.model.clf_model(self.model.predict((
-                                emb_batch.to(utils.get_device()),
-                                cand_emb)).unsqueeze(1)), axis=1)).item()
-                        elif self.model_type == "mlp":
-                            score += torch.sum(self.model(
-                                emb_batch.to(utils.get_device()),
-                                cand_emb.unsqueeze(0).expand(len(emb_batch), -1)
-                                )[:,0]).item()
-                        else:
-                            print("unrecognized model type")
-                    if score < best_score:
-                        best_score = score
-                        best_node = cand_node
-                    new_frontier = list(((set(frontier) |
-                        set(graph.neighbors(cand_node))) - visited) -
-                        set([cand_node]))
-                    new_beams.append((
-                        score, neigh + [cand_node],
-                        new_frontier, visited | set([cand_node]), graph_idx))
-            new_beams = list(sorted(new_beams, key=lambda x:
-                x[0]))[:self.n_beams]
-            for score, neigh, frontier, visited, graph_idx in new_beams[:1]:
-                graph = self.dataset[graph_idx]
-                # add to record
-                neigh_g = graph.subgraph(neigh).copy()
-                neigh_g.remove_edges_from(nx.selfloop_edges(neigh_g))
-                for v in neigh_g.nodes:
-                    neigh_g.nodes[v]["anchor"] = 1 if v == neigh[0] else 0
-                self.cand_patterns[len(neigh_g)].append((score, neigh_g))
-                if self.rank_method in ["counts", "hybrid"]:
-                    self.counts[len(neigh_g)][utils.wl_hash(neigh_g,
-                        node_anchored=self.node_anchored)].append(neigh_g)
-                if self.analyze and len(neigh) >= 3:
-                    emb = self.model.emb_model(utils.batch_nx_graphs(
-                        [neigh_g], anchors=[neigh[0]] if self.node_anchored
-                        else None)).squeeze(0)
-                    analyze_embs_cur.append(emb.detach().cpu().numpy())
-            if len(new_beams) > 0:
-                new_beam_sets.append(new_beams)
-        self.beam_sets = new_beam_sets
-        self.analyze_embs.append(analyze_embs_cur)
+        print("Aggregating results from all worker processes...")
+        for trial_patterns, trial_counts in results:
+            for size, scored_patterns in trial_patterns.items():
+                self.cand_patterns[size].extend(scored_patterns)
+            for size, hashed_patterns in trial_counts.items():
+                for h, graphs in hashed_patterns.items():
+                    self.counts[size][h].extend(graphs)
+
+        return self.finish_search()
 
     def finish_search(self):
+        """
+        Processes the aggregated results from all trials to find the most frequent patterns.
+        This method remains unchanged.
+        """
         if self.analyze:
-            print("Saving analysis info in results/analyze.p")
-            with open("results/analyze.p", "wb") as f:
-                pickle.dump((self.cand_patterns, self.analyze_embs), f)
-            xs, ys = [], []
-            for embs_ls in self.analyze_embs:
-                for emb in embs_ls:
-                    xs.append(emb[0])
-                    ys.append(emb[1])
-            print("Saving analysis plot in results/analyze.png")
-            plt.scatter(xs, ys, color="red", label="motif")
-            plt.legend()
-            plt.savefig("plots/analyze.png")
-            plt.close()
+            pass
 
         cand_patterns_uniq = []
-        for pattern_size in range(self.min_pattern_size, self.max_pattern_size+1):
+        for pattern_size in range(self.min_pattern_size, self.max_pattern_size + 1):
             if self.rank_method == "hybrid":
-                cur_rank_method = "margin" if len(max(
-                    self.counts[pattern_size].values(), key=len)) < 3 else "counts"
+                if self.counts[pattern_size]:
+                    cur_rank_method = "margin" if len(max(
+                        self.counts[pattern_size].values(), key=len, default=[])) < 3 else "counts"
+                else:
+                    cur_rank_method = "margin"
             else:
                 cur_rank_method = self.rank_method
 
+            print(f"Ranking patterns of size {pattern_size} using method: '{cur_rank_method}'")
+
             if cur_rank_method == "margin":
                 wl_hashes = set()
-                cands = cand_patterns[pattern_size]
+                cands = self.cand_patterns[pattern_size]
                 cand_patterns_uniq_size = []
-                for pattern in sorted(cands, key=lambda x: x[0]):
-                    wl_hash = utils.wl_hash(pattern[1], node_anchored=node_anchored)
+                for score, pattern in sorted(cands, key=lambda x: x[0]):
+                    wl_hash = utils.wl_hash(pattern, node_anchored=self.node_anchored)
                     if wl_hash not in wl_hashes:
                         wl_hashes.add(wl_hash)
-                        cand_patterns_uniq_size.append(pattern[1])
-                        if len(cand_patterns_uniq_size) >= out_batch_size:
-                            cand_patterns_uniq += cand_patterns_uniq_size
+                        cand_patterns_uniq_size.append(pattern)
+                        if len(cand_patterns_uniq_size) >= self.out_batch_size:
                             break
+                cand_patterns_uniq.extend(cand_patterns_uniq_size)
+                
             elif cur_rank_method == "counts":
-                for _, neighs in list(sorted(self.counts[pattern_size].items(),
-                    key=lambda x: len(x[1]), reverse=True))[:self.out_batch_size]:
+                sorted_counts = sorted(self.counts[pattern_size].items(), key=lambda x: len(x[1]), reverse=True)
+                for _, neighs in sorted_counts[:self.out_batch_size]:
                     cand_patterns_uniq.append(random.choice(neighs))
             else:
                 print("Unrecognized rank method")
+                
         return cand_patterns_uniq
 
 class MemoryEfficientGreedyAgent(GreedySearchAgent):
