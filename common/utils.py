@@ -222,6 +222,7 @@ def build_optimizer(args, params):
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.opt_restart)
     return scheduler, optimizer
 
+
 def standardize_graph(graph: nx.Graph, anchor: int = None) -> nx.Graph:
     """
     Standardize graph attributes to ensure compatibility with DeepSnap.
@@ -233,11 +234,23 @@ def standardize_graph(graph: nx.Graph, anchor: int = None) -> nx.Graph:
     Returns:
         NetworkX graph with standardized attributes
     """
-    g = graph.copy()
+    g = nx.Graph()
+    g.add_nodes_from(graph.nodes())
+    g.add_edges_from(graph.edges())
+   # g = graph.copy()
     
     # Standardize edge attributes
     for u, v in g.edges():
         edge_data = g.edges[u, v]
+
+        # Remove invalid keys
+        bad_keys = [k for k in list(edge_data.keys()) if not isinstance(k, str) or k.strip() == "" or isinstance(k, dict)]
+        for k in bad_keys:
+            del edge_data[k]
+
+        # Clean empty edge attributes if any
+        if len(edge_data) == 0:
+            edge_data['weight'] = 1.0
         # Ensure weight exists
         if 'weight' not in edge_data:
             edge_data['weight'] = 1.0
@@ -273,7 +286,12 @@ def standardize_graph(graph: nx.Graph, anchor: int = None) -> nx.Graph:
     
     return g
 
+
+
+
 def batch_nx_graphs(graphs, anchors=None):
+
+
     # Initialize feature augmenter
     augmenter = feature_preprocess.FeatureAugment()
     
@@ -283,14 +301,17 @@ def batch_nx_graphs(graphs, anchors=None):
         anchor = anchors[i] if anchors is not None else None
         try:
             # Standardize graph attributes
+
+
             std_graph = standardize_graph(graph, anchor)
             
             # Convert to DeepSnap format
             ds_graph = DSGraph(std_graph)
+
             processed_graphs.append(ds_graph)
             
         except Exception as e:
-            #print(f"Warning: Error processing graph {i}: {str(e)}")
+            print(f"Warning: Error processing graph {i}: {str(e)}")
             # Create minimal graph with basic features if conversion fails
             minimal_graph = nx.Graph()
             minimal_graph.add_nodes_from(graph.nodes())
@@ -305,6 +326,7 @@ def batch_nx_graphs(graphs, anchors=None):
     # Suppress the specific warning during augmentation
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', message='Unknown type of key*')
+
         batch = augmenter.augment(batch)
     
     return batch.to(get_device())
