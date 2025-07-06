@@ -464,6 +464,11 @@ def generate_one_baseline(args):
     print(f"[WARN] Baseline not found for query {i} after {MAX_ATTEMPTS} attempts.")
     return nx.Graph()  # Return empty graph if failed
 
+def convert_to_networkx(graph):
+    if isinstance(graph, nx.Graph):
+        return graph
+    return pyg_utils.to_networkx(graph).to_undirected()
+    
 def gen_baseline_queries(queries, targets, method="radial", node_anchored=False):
     print(f"Generating {len(queries)} baseline queries in parallel using method: {method}")
     
@@ -473,11 +478,7 @@ def gen_baseline_queries(queries, targets, method="radial", node_anchored=False)
     
     return results
 
-def convert_to_networkx(graph):
-    if isinstance(graph, nx.Graph):
-        return graph
-    return pyg_utils.to_networkx(graph).to_undirected()
-    
+
 def main():
     global args
     args = arg_parse()
