@@ -224,7 +224,7 @@ def pattern_growth(dataset, task, args):
                             subgraph.edges[mapping[old_u], mapping[old_v]].update(attrs)
                         
                         subgraph.add_edge(0, 0)
-                        neigh.nodes[0]["anchor"] = True
+                        subgraph.nodes[0]["anchor"] = True
                         neighs.append(subgraph)
                         if args.node_anchored:
                             anchors.append(0)
