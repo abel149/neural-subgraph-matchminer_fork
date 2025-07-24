@@ -51,6 +51,10 @@ def parse_decoder(parser):
     dec_parser.add_argument('--n_clusters', type=int,
         help='number of clusters for analysis')
 
+    # Graph type selection
+    dec_parser.add_argument('--graph_type', type=str,
+        help='"directed" or "undirected" graph type')
+    
     # Set default values
     parser.set_defaults(
         # Dataset defaults
@@ -66,6 +70,7 @@ def parse_decoder(parser):
         subgraph_sample_size=0,
         sample_method="radial",
         skip="learnable",
+        graph_type="undirected",
         min_pattern_size=5,
         max_pattern_size=10,
         min_neighborhood_size=5,
