@@ -156,7 +156,7 @@ def gen_baseline_queries_mfinder(queries, targets, n_samples=10000,
         print(size)
         counts = defaultdict(list)
         for i in tqdm(range(n_samples)):
-            graph, neigh = sample_neigh(targets, size)
+            graph, neigh = sample_neigh(targets, size, graph_type="undirected")
             v = neigh[0]
             neigh = graph.subgraph(neigh).copy()
             nx.set_node_attributes(neigh, 0, name="anchor")
@@ -244,7 +244,7 @@ def standardize_graph(graph: nx.Graph, anchor: int = None) -> nx.Graph:
         g = nx.DiGraph()
     else:
         g = nx.Graph()
-        
+
     g.add_nodes_from(graph.nodes())
     g.add_edges_from(graph.edges())
    # g = graph.copy()
