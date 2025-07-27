@@ -5,6 +5,8 @@
 HYPERPARAM_SEARCH = False
 HYPERPARAM_SEARCH_N_TRIALS = None   # how many grid search trials to run
                                     #    (set to None for exhaustive search)
+import torch.multiprocessing
+torch.multiprocessing.set_start_method('spawn', force=True)
 
 import argparse
 from itertools import permutations
@@ -39,6 +41,7 @@ else:
     from subgraph_matching.config import parse_encoder
 from subgraph_matching.test import validation
 
+
 def build_model(args):
     # build model
     if args.method_type == "order":
@@ -51,6 +54,7 @@ def build_model(args):
             map_location=utils.get_device()))
     return model
 
+
 def make_data_source(args):
     toks = args.dataset.split("-")
     if toks[0] == "syn":
@@ -62,6 +66,13 @@ def make_data_source(args):
                 node_anchored=args.node_anchored)
         else:
             raise Exception("Error: unrecognized dataset")
+    elif toks[0] == "graph":
+        data_source = data.GeneGraphDataSource(
+            graph_pkl_path=args.graph_pkl_path,
+            node_anchored=args.node_anchored,
+            num_queries=args.num_queries if hasattr(args, "num_queries") else 32,
+            subgraph_hops=args.subgraph_hops if hasattr(args, "subgraph_hops") else 1
+        )
     else:
         if len(toks) == 1 or toks[1] == "balanced":
             data_source = data.DiskDataSource(toks[0],
@@ -133,6 +144,9 @@ def train(args, model, logger, in_queue, out_queue):
             out_queue.put(("step", (loss.item(), acc)))
 
 def train_loop(args):
+    import torch.multiprocessing as mp
+    mp.set_start_method('spawn', force=True)
+    torch.multiprocessing.set_sharing_strategy('file_descriptor')
     if not os.path.exists(os.path.dirname(args.model_path)):
         os.makedirs(os.path.dirname(args.model_path))
     if not os.path.exists("plots/"):
@@ -201,7 +215,9 @@ def train_loop(args):
         worker.join()
 
 def main(force_test=False):
-    mp.set_start_method("spawn", force=True)
+    
+    mp.set_start_method('spawn', force=True)
+ 
     parser = (argparse.ArgumentParser(description='Order embedding arguments')
         if not HYPERPARAM_SEARCH else
         HyperOptArgumentParser(strategy='grid_search'))
