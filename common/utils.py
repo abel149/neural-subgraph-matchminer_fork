@@ -17,7 +17,7 @@ import warnings
 from common import feature_preprocess
 
 
-def sample_neigh(graphs, size):
+def sample_neigh(graphs, size, graph_type):
     ps = np.array([len(g) for g in graphs], dtype=float)
     ps /= np.sum(ps)
     dist = stats.rv_discrete(values=(np.arange(len(graphs)), ps))
@@ -27,7 +27,10 @@ def sample_neigh(graphs, size):
         graph = graphs[idx]
         start_node = random.choice(list(graph.nodes))
         neigh = [start_node]
-        frontier = list(set(graph.neighbors(start_node)) - set(neigh))
+        if graph_type == "undirected":
+            frontier = list(set(graph.neighbors(start_node)) - set(neigh))
+        elif graph_type == "directed":
+            frontier = list(set(graph.successors(start_node)) - set(neigh))
         visited = set([start_node])
         while len(neigh) < size and frontier:
             new_node = random.choice(list(frontier))
@@ -35,7 +38,10 @@ def sample_neigh(graphs, size):
             assert new_node not in neigh
             neigh.append(new_node)
             visited.add(new_node)
-            frontier += list(graph.neighbors(new_node))
+            if graph_type == "undirected":
+                frontier += list(graph.neighbors(new_node))
+            elif graph_type == "directed":
+                frontier += list(graph.successors(new_node))
             frontier = [x for x in frontier if x not in visited]
         if len(neigh) == size:
             return graph, neigh
@@ -150,7 +156,7 @@ def gen_baseline_queries_mfinder(queries, targets, n_samples=10000,
         print(size)
         counts = defaultdict(list)
         for i in tqdm(range(n_samples)):
-            graph, neigh = sample_neigh(targets, size)
+            graph, neigh = sample_neigh(targets, size, graph_type="undirected")
             v = neigh[0]
             neigh = graph.subgraph(neigh).copy()
             nx.set_node_attributes(neigh, 0, name="anchor")
@@ -234,7 +240,11 @@ def standardize_graph(graph: nx.Graph, anchor: int = None) -> nx.Graph:
     Returns:
         NetworkX graph with standardized attributes
     """
-    g = nx.Graph()
+    if isinstance(graph, nx.DiGraph):
+        g = nx.DiGraph()
+    else:
+        g = nx.Graph()
+
     g.add_nodes_from(graph.nodes())
     g.add_edges_from(graph.edges())
    # g = graph.copy()
