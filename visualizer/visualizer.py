@@ -332,3 +332,54 @@ def extract_graph_data(graph: nx.Graph) -> Dict[str, Any]:
     """
     extractor = GraphDataExtractor()
     return extractor.extract_graph_data(graph)
+
+def validate_graph_data(graph_data: Dict[str, Any]) -> bool:
+    """
+    Validate that extracted graph data has the required structure.
+    """
+    try:
+        # Check required top-level keys
+        required_keys = ['metadata', 'nodes', 'edges', 'legend']
+        if not all(key in graph_data for key in required_keys):
+            return False
+        
+        # Check metadata structure
+        metadata = graph_data['metadata']
+        metadata_keys = ['title', 'nodeCount', 'edgeCount', 'isDirected', 'density']
+        if not all(key in metadata for key in metadata_keys):
+            return False
+        
+        # Check nodes structure
+        nodes = graph_data['nodes']
+        if not isinstance(nodes, list) or len(nodes) == 0:
+            return False
+        
+        # Validate first node structure
+        node_keys = ['id', 'x', 'y', 'label', 'anchor']
+        if not all(key in nodes[0] for key in node_keys):
+            return False
+        
+        # Check edges structure
+        edges = graph_data['edges']
+        if not isinstance(edges, list):
+            return False
+        
+        # If edges exist, validate structure
+        if len(edges) > 0:
+            edge_keys = ['source', 'target', 'directed', 'label']
+            if not all(key in edges[0] for key in edge_keys):
+                return False
+        
+        # Check legend structure
+        legend = graph_data['legend']
+        if not isinstance(legend, dict):
+            return False
+        
+        legend_keys = ['nodeTypes', 'edgeTypes']
+        if not all(key in legend for key in legend_keys):
+            return False
+        
+        return True
+        
+    except Exception:
+        return False
