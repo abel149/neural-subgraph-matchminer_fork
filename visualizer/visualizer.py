@@ -654,3 +654,13 @@ class HTMLTemplateProcessor:
             
         except Exception as e:
             raise RuntimeError(f"Template processing failed: {str(e)}")
+        
+def process_html_template(graph_data: Dict[str, Any], 
+                         template_path: str = "template.html",
+                         output_filename: Optional[str] = None,
+                         output_dir: str = ".") -> str:
+    """
+    Convenience function for HTML template processing.
+    """
+    processor = HTMLTemplateProcessor(template_path)
+    return processor.process_template(graph_data, output_filename, output_dir)
