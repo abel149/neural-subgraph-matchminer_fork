@@ -383,3 +383,33 @@ def validate_graph_data(graph_data: Dict[str, Any]) -> bool:
         
     except Exception:
         return False
+
+def handle_extraction_errors(func):
+    """
+    Decorator to handle common extraction errors with informative messages.
+    """
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except ValueError as e:
+            print(f"Graph validation error: {e}")
+            return None
+        except TypeError as e:
+            print(f"Graph type error: {e}")
+            return None
+        except RuntimeError as e:
+            print(f"Graph extraction error: {e}")
+            return None
+        except Exception as e:
+            print(f"Unexpected error during graph extraction: {e}")
+            traceback.print_exc()
+            return None
+    
+    return wrapper
+
+@handle_extraction_errors
+def safe_extract_graph_data(graph: nx.Graph) -> Optional[Dict[str, Any]]:
+    """
+    Safely extract graph data with comprehensive error handling.
+    """
+    return extract_graph_data(graph)
