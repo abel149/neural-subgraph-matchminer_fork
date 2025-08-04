@@ -718,3 +718,270 @@
                     ]
                 }
             };
+
+        // Dynamic Style Management System
+        class StyleManager {
+            constructor() {
+                this.nodeTypeColors = new Map();
+                this.edgeTypeColors = new Map();
+                this.discoveredNodeTypes = new Set();
+                this.discoveredEdgeTypes = new Set();
+                this.colorSeed = 0;
+            }
+            
+            discoverTypes(nodes, edges) {
+                // Clear previous discoveries for fresh analysis
+                this.discoveredNodeTypes.clear();
+                this.discoveredEdgeTypes.clear();
+                
+                // Discover all unique node types (excluding anchors as they have special handling)
+                nodes.forEach(node => {
+                    if (node.label && !node.anchor) {
+                        this.discoveredNodeTypes.add(node.label);
+                    }
+                });
+                
+                // Discover all unique edge types
+                edges.forEach(edge => {
+                    if (edge.label) {
+                        this.discoveredEdgeTypes.add(edge.label);
+                    }
+                });
+                
+                // Generate colors for discovered types
+                this.generateColorsForTypes();
+                
+                // Update legend immediately after discovery
+                this.updateLegend();
+                
+                // Validate requirements are met
+                this.validateLegendRequirements();
+                
+                console.log(`Legend updated: ${this.discoveredNodeTypes.size} node types, ${this.discoveredEdgeTypes.size} edge types`);
+            }
+            
+            generateColorsForTypes() {
+                // Reset color seed for consistent color generation
+                this.colorSeed = 0;
+                
+                // Generate colors for node types with better distribution
+                const sortedNodeTypes = Array.from(this.discoveredNodeTypes).sort();
+                sortedNodeTypes.forEach(type => {
+                    if (!this.nodeTypeColors.has(type)) {
+                        this.nodeTypeColors.set(type, this.generateLightTransparentColor(0.7));
+                    }
+                });
+                
+                // Generate colors for edge types with slightly more transparency
+                const sortedEdgeTypes = Array.from(this.discoveredEdgeTypes).sort();
+                sortedEdgeTypes.forEach(type => {
+                    if (!this.edgeTypeColors.has(type)) {
+                        this.edgeTypeColors.set(type, this.generateLightTransparentColor(0.6));
+                    }
+                });
+            }
+            
+            generateLightTransparentColor(alpha = 0.7) {
+                // Use golden angle for optimal color distribution
+                const hue = (this.colorSeed * 137.508) % 360;
+                
+                // Ensure good saturation and lightness for readability
+                const saturation = 50 + (this.colorSeed * 19) % 25; // 50-75% saturation
+                const lightness = 65 + (this.colorSeed * 13) % 20; // 65-85% lightness
+                
+                this.colorSeed++;
+                
+                // Convert HSL to RGB
+                const rgb = this.hslToRgb(hue / 360, saturation / 100, lightness / 100);
+                return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
+            }
+            
+            hslToRgb(h, s, l) {
+                let r, g, b;
+                
+                if (s === 0) {
+                    r = g = b = l; // achromatic
+                } else {
+                    const hue2rgb = (p, q, t) => {
+                        if (t < 0) t += 1;
+                        if (t > 1) t -= 1;
+                        if (t < 1/6) return p + (q - p) * 6 * t;
+                        if (t < 1/2) return q;
+                        if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                        return p;
+                    };
+                    
+                    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                    const p = 2 * l - q;
+                    r = hue2rgb(p, q, h + 1/3);
+                    g = hue2rgb(p, q, h);
+                    b = hue2rgb(p, q, h - 1/3);
+                }
+                
+                return {
+                    r: Math.round(r * 255),
+                    g: Math.round(g * 255),
+                    b: Math.round(b * 255)
+                };
+            }
+            
+            getNodeColor(type) {
+                if (!type) type = 'default';
+                
+                if (!this.nodeTypeColors.has(type)) {
+                    this.nodeTypeColors.set(type, this.generateLightTransparentColor(0.7));
+                    this.discoveredNodeTypes.add(type);
+                    this.updateLegend();
+                }
+                
+                return this.nodeTypeColors.get(type);
+            }
+            
+            getEdgeColor(type) {
+                if (!type) type = 'default';
+                
+                if (!this.edgeTypeColors.has(type)) {
+                    this.edgeTypeColors.set(type, this.generateLightTransparentColor(0.6));
+                    this.discoveredEdgeTypes.add(type);
+                    this.updateLegend();
+                }
+                
+                return this.edgeTypeColors.get(type);
+            }
+            
+            // Method to force legend refresh - useful for external calls
+            refreshLegend() {
+                this.updateLegend();
+            }
+            
+            // Validate that legend meets all requirements
+            validateLegendRequirements() {
+                const legendContent = document.getElementById('legend-content');
+                const results = {
+                    requirement_5_1: !!legendContent, // Legend card exists
+                    requirement_5_2: this.discoveredNodeTypes.size > 0, // Node types shown
+                    requirement_5_3: this.discoveredEdgeTypes.size > 0, // Edge types shown
+                    requirement_5_4: legendContent.innerHTML.includes('Anchor Nodes'), // Anchor indication
+                    proper_spacing: legendContent.querySelectorAll('.legend-section').length > 0,
+                    color_mapping: this.nodeTypeColors.size > 0 || this.edgeTypeColors.size > 0
+                };
+                
+                console.log('Legend Requirements Validation:', results);
+                return results;
+            }
+            
+            updateLegend() {
+                const legendContent = document.getElementById('legend-content');
+                if (!legendContent) return;
+                
+                // Clear existing content
+                legendContent.innerHTML = '';
+                
+                // Create legend sections with proper spacing and readability
+                this.createNodeTypesLegend(legendContent);
+                this.createEdgeTypesLegend(legendContent);
+                this.createAnchorNodesLegend(legendContent);
+            }
+            
+            createNodeTypesLegend(legendContent) {
+                if (this.discoveredNodeTypes.size === 0) return;
+                
+                const nodeSection = document.createElement('div');
+                nodeSection.className = 'legend-section';
+                
+                const header = document.createElement('h4');
+                header.textContent = 'Node Types';
+                nodeSection.appendChild(header);
+                
+                // Sort node types alphabetically for consistent display
+                const sortedNodeTypes = Array.from(this.discoveredNodeTypes).sort();
+                
+                sortedNodeTypes.forEach(type => {
+                    const color = this.nodeTypeColors.get(type);
+                    const item = document.createElement('div');
+                    item.className = 'legend-item';
+                    
+                    const colorBox = document.createElement('div');
+                    colorBox.className = 'legend-color';
+                    colorBox.style.backgroundColor = color;
+                    
+                    const label = document.createElement('span');
+                    label.textContent = type;
+                    
+                    item.appendChild(colorBox);
+                    item.appendChild(label);
+                    nodeSection.appendChild(item);
+                });
+                
+                legendContent.appendChild(nodeSection);
+            }
+            
+            createEdgeTypesLegend(legendContent) {
+                if (this.discoveredEdgeTypes.size === 0) return;
+                
+                const edgeSection = document.createElement('div');
+                edgeSection.className = 'legend-section';
+                
+                const header = document.createElement('h4');
+                header.textContent = 'Edge Types';
+                edgeSection.appendChild(header);
+                
+                // Sort edge types alphabetically for consistent display
+                const sortedEdgeTypes = Array.from(this.discoveredEdgeTypes).sort();
+                
+                sortedEdgeTypes.forEach(type => {
+                    const color = this.edgeTypeColors.get(type);
+                    const item = document.createElement('div');
+                    item.className = 'legend-item';
+                    
+                    const colorBox = document.createElement('div');
+                    colorBox.className = 'legend-color';
+                    colorBox.style.backgroundColor = color;
+                    
+                    const label = document.createElement('span');
+                    label.textContent = type;
+                    
+                    item.appendChild(colorBox);
+                    item.appendChild(label);
+                    edgeSection.appendChild(item);
+                });
+                
+                legendContent.appendChild(edgeSection);
+            }
+            
+            createAnchorNodesLegend(legendContent) {
+                // Always show anchor nodes section as per requirement 5.4
+                const anchorSection = document.createElement('div');
+                anchorSection.className = 'legend-section';
+                
+                const header = document.createElement('h4');
+                header.textContent = 'Special Nodes';
+                anchorSection.appendChild(header);
+                
+                const item = document.createElement('div');
+                item.className = 'legend-item';
+                
+                const colorBox = document.createElement('div');
+                colorBox.className = 'legend-shape';
+                colorBox.style.backgroundColor = 'rgba(239, 68, 68, 0.8)';
+                colorBox.style.borderRadius = '2px'; // Make it more square-like
+                
+                const label = document.createElement('span');
+                label.textContent = 'Anchor Nodes';
+                
+                item.appendChild(colorBox);
+                item.appendChild(label);
+                anchorSection.appendChild(item);
+                
+                legendContent.appendChild(anchorSection);
+            }
+            
+            getTypeStatistics() {
+                return {
+                    nodeTypes: Array.from(this.discoveredNodeTypes),
+                    edgeTypes: Array.from(this.discoveredEdgeTypes),
+                    nodeTypeCount: this.discoveredNodeTypes.size,
+                    edgeTypeCount: this.discoveredEdgeTypes.size
+                };
+            }
+        }
