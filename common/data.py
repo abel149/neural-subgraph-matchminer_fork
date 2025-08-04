@@ -105,7 +105,6 @@ def sample_subgraph(g_obj, anchors=None, radius=2, hard_neg_idxs=None):
 class DataSource:
     def gen_batch(batch_target, batch_neg_target, batch_neg_query, train):
         raise NotImplementedError
-
 class CustomGraphDataset:
     def __init__(self, graph_pkl_path, node_anchored=False, num_queries=32, subgraph_hops=1, min_size=5, max_size=29):
         self.graph_pkl_path = graph_pkl_path
@@ -115,11 +114,15 @@ class CustomGraphDataset:
         self.min_size = min_size
         self.max_size = max_size
         self.query_size = 5
-       
-        self.raw_data = self._load_graph()
-        self.full_graph = self._build_graph()
-        self.graph = self.full_graph.G
-      
+
+        if isinstance(graph_pkl_path, nx.Graph):
+            self.full_graph = DSGraph(graph_pkl_path)
+            self.graph = self.full_graph.G
+        else:
+            self.raw_data = self._load_graph()
+            self.full_graph = self._build_graph()
+            self.graph = self.full_graph.G
+
     def _load_graph(self):
         with open(self.graph_pkl_path, 'rb') as f:
             return pickle.load(f)
