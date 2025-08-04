@@ -97,7 +97,25 @@ jobs:
       #         echo 'Counting completed.'
       #         ls -la /app/results
       #       "
-
+      - name: Run matcher in Docker container
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/app \
+            -e PYTHONUNBUFFERED=1 \
+            decoder-image:latest \
+            bash -c "
+              set -e
+              echo 'Starting matcher run on custom gene graph...'
+              python -m subgraph_matching.train \
+                --dataset=graph \
+                --graph_pkl_path=graph.pkl \
+                --node_anchored \
+                --batch_size 16 \
+                --val_size 128
+              echo 'Checking output directories...'
+              ls -la /app/results
+              ls -la /app/plots
+            "
       - name: Check for generated files
         run: |
           echo "Checking plots directory:"
