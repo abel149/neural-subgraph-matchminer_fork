@@ -3512,3 +3512,168 @@
                 ctx.restore();
             }
         }
+
+        // UI Management System
+        class UIManager {
+            constructor() {
+                this.setupLegend();
+                this.setupControls();
+            }
+            
+            setupLegend() {
+                const legendContent = document.getElementById('legend-content');
+                
+                // Check if we have predefined legend data
+                if (GRAPH_DATA.legend && (GRAPH_DATA.legend.nodeTypes.length > 0 || GRAPH_DATA.legend.edgeTypes.length > 0)) {
+                    // Use predefined legend data and populate StyleManager with those colors
+                    this.setupPredefinedLegend(legendContent);
+                } else {
+                    // Initialize with placeholder - will be populated by StyleManager.discoverTypes()
+                    legendContent.innerHTML = `
+                        <div class="legend-section">
+                            <h4>Legend</h4>
+                            <div class="legend-item">
+                                <span>Analyzing graph types...</span>
+                            </div>
+                        </div>
+                    `;
+                }
+            }
+            
+            setupPredefinedLegend(legendContent) {
+                legendContent.innerHTML = '';
+                
+                // Node types section
+                if (GRAPH_DATA.legend.nodeTypes.length > 0) {
+                    const nodeSection = document.createElement('div');
+                    nodeSection.className = 'legend-section';
+                    
+                    const header = document.createElement('h4');
+                    header.textContent = 'Node Types';
+                    nodeSection.appendChild(header);
+                    
+                    GRAPH_DATA.legend.nodeTypes.forEach(nodeType => {
+                        const item = document.createElement('div');
+                        item.className = 'legend-item';
+                        
+                        const colorBox = document.createElement('div');
+                        colorBox.className = 'legend-color';
+                        colorBox.style.backgroundColor = nodeType.color;
+                        
+                        const label = document.createElement('span');
+                        label.textContent = nodeType.label;
+                        
+                        item.appendChild(colorBox);
+                        item.appendChild(label);
+                        nodeSection.appendChild(item);
+                        
+                        // Populate StyleManager with predefined colors
+                        if (window.styleManager) {
+                            window.styleManager.nodeTypeColors.set(nodeType.label, nodeType.color);
+                            window.styleManager.discoveredNodeTypes.add(nodeType.label);
+                        }
+                    });
+                    
+                    legendContent.appendChild(nodeSection);
+                }
+                
+                // Edge types section
+                if (GRAPH_DATA.legend.edgeTypes.length > 0) {
+                    const edgeSection = document.createElement('div');
+                    edgeSection.className = 'legend-section';
+                    
+                    const header = document.createElement('h4');
+                    header.textContent = 'Edge Types';
+                    edgeSection.appendChild(header);
+                    
+                    GRAPH_DATA.legend.edgeTypes.forEach(edgeType => {
+                        const item = document.createElement('div');
+                        item.className = 'legend-item';
+                        
+                        const colorBox = document.createElement('div');
+                        colorBox.className = 'legend-color';
+                        colorBox.style.backgroundColor = edgeType.color;
+                        
+                        const label = document.createElement('span');
+                        label.textContent = edgeType.label;
+                        
+                        item.appendChild(colorBox);
+                        item.appendChild(label);
+                        edgeSection.appendChild(item);
+                        
+                        // Populate StyleManager with predefined colors
+                        if (window.styleManager) {
+                            window.styleManager.edgeTypeColors.set(edgeType.label, edgeType.color);
+                            window.styleManager.discoveredEdgeTypes.add(edgeType.label);
+                        }
+                    });
+                    
+                    legendContent.appendChild(edgeSection);
+                }
+                
+                // Always add anchor nodes section
+                const anchorSection = document.createElement('div');
+                anchorSection.className = 'legend-section';
+                
+                const header = document.createElement('h4');
+                header.textContent = 'Special Nodes';
+                anchorSection.appendChild(header);
+                
+                const item = document.createElement('div');
+                item.className = 'legend-item';
+                
+                const colorBox = document.createElement('div');
+                colorBox.className = 'legend-shape';
+                colorBox.style.backgroundColor = 'rgba(239, 68, 68, 0.8)';
+                colorBox.style.borderRadius = '2px';
+                
+                const label = document.createElement('span');
+                label.textContent = 'Anchor Nodes';
+                
+                item.appendChild(colorBox);
+                item.appendChild(label);
+                anchorSection.appendChild(item);
+                
+                legendContent.appendChild(anchorSection);
+            }
+            
+            setupControls() {
+                // Initialize labels as enabled by default
+                window.labelsEnabled = true;
+                
+                // Label toggle functionality
+                const labelToggle = document.getElementById('label-toggle');
+                labelToggle.addEventListener('change', function() {
+                    window.labelsEnabled = this.checked;
+                    // Trigger re-render to show/hide labels
+                    if (window.canvasNavigator) {
+                        window.canvasNavigator.render();
+                    }
+                    console.log('Labels', this.checked ? 'enabled' : 'disabled');
+                });
+                
+                // Initialize export manager
+                const canvas = document.getElementById('graph-canvas');
+                window.exportManager = new ExportManager(canvas);
+                
+                // Export functionality
+                document.getElementById('export-pdf').addEventListener('click', function() {
+                    window.exportManager.exportToPDF();
+                });
+                
+                document.getElementById('export-svg').addEventListener('click', function() {
+                    window.exportManager.exportHighQualityPNG();
+                });
+            }
+            
+            updateGraphStats(nodeCount, edgeCount, density) {
+                const statsElement = document.getElementById('graph-stats');
+                const typeStats = window.styleManager ? window.styleManager.getTypeStatistics() : {};
+                const nodeTypeCount = typeStats.nodeTypeCount || 0;
+                const edgeTypeCount = typeStats.edgeTypeCount || 0;
+                
+                statsElement.textContent = `${nodeCount} nodes (${nodeTypeCount} types), ${edgeCount} edges (${edgeTypeCount} types)`;
+            }
+        }
+
+
