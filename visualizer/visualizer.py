@@ -324,3 +324,11 @@ class GraphDataExtractor:
             'nodeTypes': node_legend,
             'edgeTypes': edge_legend
         }
+
+
+def extract_graph_data(graph: nx.Graph) -> Dict[str, Any]:
+    """
+    Convenience function to extract graph data using GraphDataExtractor.
+    """
+    extractor = GraphDataExtractor()
+    return extractor.extract_graph_data(graph)
