@@ -664,3 +664,110 @@ def process_html_template(graph_data: Dict[str, Any],
     """
     processor = HTMLTemplateProcessor(template_path)
     return processor.process_template(graph_data, output_filename, output_dir)
+
+def visualize_pattern_graph_ext(pattern, args, count_by_size):
+    """
+    Main visualizer integration function matching existing API signature.
+    """
+    import logging
+    
+    # Configure logging for comprehensive error tracking
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Validate input parameters
+        if pattern is None:
+            logger.error("Pattern graph cannot be None")
+            return False
+            
+        if not isinstance(pattern, (nx.Graph, nx.DiGraph, nx.MultiGraph, nx.MultiDiGraph)):
+            logger.error(f"Pattern must be a NetworkX graph, got {type(pattern)}")
+            return False
+            
+        if len(pattern) == 0:
+            logger.error("Pattern graph cannot be empty")
+            return False
+        
+        # Log graph characteristics for debugging
+        num_nodes = len(pattern)
+        num_edges = pattern.number_of_edges()
+        graph_type = "directed" if pattern.is_directed() else "undirected"
+        logger.info(f"Processing {graph_type} graph with {num_nodes} nodes and {num_edges} edges")
+        
+        # Step 1: Extract graph data from NetworkX graph
+        logger.info("Extracting graph data from NetworkX object...")
+        try:
+            extractor = GraphDataExtractor()
+            graph_data = extractor.extract_graph_data(pattern)
+            logger.info("Graph data extraction completed successfully")
+        except Exception as e:
+            logger.error(f"Graph data extraction failed: {str(e)}")
+            logger.debug("Graph data extraction error details:", exc_info=True)
+            return False
+        
+        # Step 2: Validate extracted graph data
+        logger.info("Validating extracted graph data...")
+        if not validate_graph_data(graph_data):
+            logger.error("Extracted graph data failed validation")
+            return False
+        logger.info("Graph data validation passed")
+        
+        # Step 3: Generate HTML visualization
+        logger.info("Generating HTML visualization...")
+        try:
+            import os
+            # Ensure output directory exists
+            output_dir = os.path.join(os.path.dirname(__file__), "../../plots/cluster")
+            output_dir = os.path.abspath(output_dir)
+            os.makedirs(output_dir, exist_ok=True)
+
+            template_path = os.path.join(os.path.dirname(__file__), "template.html")
+            processor = HTMLTemplateProcessor(template_path)
+            
+            # Generate filename based on graph characteristics and count_by_size
+            base_filename = _generate_pattern_filename(pattern, count_by_size)
+            
+            # Process template and create HTML file in plots/cluster
+            output_path = processor.process_template(
+                graph_data=graph_data,
+                output_filename=base_filename,
+                output_dir=output_dir
+            )
+            
+            logger.info(f"HTML visualization created successfully: {output_path}")
+
+        except FileNotFoundError as e:
+            logger.error(f"Template file not found: {str(e)}")
+            logger.info("Make sure template.html exists in the current directory")
+            return False
+        except Exception as e:
+            logger.error(f"HTML generation failed: {str(e)}")
+            logger.debug("HTML generation error details:", exc_info=True)
+            return False
+        
+        # Step 4: Update success counter (for compatibility with existing pipeline)
+        if count_by_size is not None and isinstance(count_by_size, dict):
+            try:
+                # Increment success counter for this graph size
+                if num_nodes in count_by_size:
+                    # This maintains compatibility with the existing counting system
+                    logger.info(f"Graph size {num_nodes} has {count_by_size[num_nodes]} occurrences")
+                else:
+                    logger.info(f"New graph size {num_nodes} encountered")
+            except Exception as e:
+                logger.warning(f"Counter update failed (non-critical): {str(e)}")
+        
+        logger.info("Interactive graph visualization completed successfully")
+        return True
+        
+    except KeyboardInterrupt:
+        logger.info("Visualization interrupted by user")
+        return False
+    except MemoryError:
+        logger.error("Insufficient memory to process graph visualization")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error during graph visualization: {str(e)}")
+        logger.debug("Unexpected error details:", exc_info=True)
+        return False
