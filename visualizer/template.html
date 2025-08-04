@@ -3676,4 +3676,95 @@
             }
         }
 
+        // Initialize canvas and set up navigation system
+        document.addEventListener('DOMContentLoaded', function() {
+            const canvas = document.getElementById('graph-canvas');
+            const ctx = canvas.getContext('2d');
+            
+            // Set canvas size to full window
+            function resizeCanvas() {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+                if (window.canvasNavigator) {
+                    window.canvasNavigator.render();
+                }
+            }
+            
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+            
+            // Initialize style manager
+            window.styleManager = new StyleManager();
 
+            // Initialize layout engine
+            window.layoutEngine = new GraphLayoutEngine();
+            window.labelsEnabled = true;            
+            
+            window.uiManager = new UIManager();
+            // Apply initial layout and discover types if graph data exists
+            if (GRAPH_DATA && GRAPH_DATA.nodes && GRAPH_DATA.nodes.length > 0) {
+                window.styleManager.discoverTypes(GRAPH_DATA.nodes, GRAPH_DATA.edges);
+                // window.layoutEngine.generateInitialLayout(GRAPH_DATA.nodes, GRAPH_DATA.edges);
+                window.layoutEngine.generateConcentricLayout(GRAPH_DATA.nodes, GRAPH_DATA.edges);
+
+                // --- Center the graph by shifting node positions ---
+                // Compute bounding box of all nodes
+                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                GRAPH_DATA.nodes.forEach(node => {
+                    if (node.x < minX) minX = node.x;
+                    if (node.y < minY) minY = node.y;
+                    if (node.x > maxX) maxX = node.x;
+                    if (node.y > maxY) maxY = node.y;
+                });
+                const graphWidth = maxX - minX;
+                const graphHeight = maxY - minY;
+
+                // Center of graph in world coordinates
+                const graphCenterX = minX + graphWidth / 2;
+                const graphCenterY = minY + graphHeight / 2;
+
+                // Center of canvas in screen coordinates
+                const canvasCenterX = window.innerWidth / 2;
+                const canvasCenterY = window.innerHeight / 2;
+
+                // Calculate offset to shift all nodes so the graph is centered
+                const offsetX = canvasCenterX - graphCenterX;
+                const offsetY = canvasCenterY - graphCenterY;
+
+                // Shift all node positions
+                GRAPH_DATA.nodes.forEach(node => {
+                    node.x += offsetX;
+                    node.y += offsetY;
+                });
+
+                // No need to set window.initialTransform for centering
+            }
+            
+            // Initialize navigation system
+            window.canvasNavigator = new CanvasNavigator(canvas, ctx);
+            
+            // Update title and stats
+            document.getElementById('graph-title').textContent = GRAPH_DATA.metadata.title;
+            
+            // Update stats with type information
+            if (window.uiManager) {
+                window.uiManager.updateGraphStats(
+                    GRAPH_DATA.metadata.nodeCount, 
+                    GRAPH_DATA.metadata.edgeCount, 
+                    GRAPH_DATA.metadata.density
+                );
+            } else {
+                document.getElementById('graph-stats').textContent = 
+                    `${GRAPH_DATA.metadata.nodeCount} nodes, ${GRAPH_DATA.metadata.edgeCount} edges`;
+            }
+            
+            // Hide context menu on click outside
+            document.addEventListener('click', function() {
+                document.getElementById('context-menu').classList.add('hidden');
+            });
+            
+            console.log('Interactive Graph Visualizer with navigation system and UI components loaded successfully');
+        });
+    </script>
+</body>
+</html>
