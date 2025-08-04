@@ -493,3 +493,228 @@
         <div class="context-menu-item" id="copy-label">Copy Label</div>
         <div class="context-menu-item" id="cancel-isolate" style="display: none;">Cancel Isolate</div>
     </div>
+
+    <script>
+        // Sample 7-node directed graph data
+        const GRAPH_DATA = {
+        "metadata": {
+                "title": "Directed Graph with Anchors",
+                "nodeCount": 11,
+                "edgeCount": 10,
+                "isDirected": true,
+                "density": 0.091
+        },
+        "nodes": [
+                {
+                        "id": "enst00000316891",
+                        "label": "transcript",
+                        "transcript_name": "TRIT1-201",
+                        "gene_name": "TRIT1",
+                        "anchor": false,
+                        "x": 27.65196752359671,
+                        "y": 197.0768524739416
+                },
+                {
+                        "id": "enst00000441669",
+                        "label": "transcript",
+                        "transcript_name": "TRIT1-203",
+                        "gene_name": "TRIT1",
+                        "anchor": false,
+                        "x": 198.15733023744193,
+                        "y": 37.6455322302267
+                },
+                {
+                        "id": "q9h3h1-1",
+                        "label": "protein",
+                        "protein_name": "MOD5",
+                        "isoform_name": "1",
+                        "anchor": false,
+                        "x": -95.0809692854939,
+                        "y": -177.28703171738803
+                },
+                {
+                        "id": "enst00000372818",
+                        "label": "transcript",
+                        "transcript_name": "TRIT1-202",
+                        "gene_name": "TRIT1",
+                        "anchor": false,
+                        "x": -166.60054744627251,
+                        "y": 98.79798083873025
+                },
+                {
+                        "id": "enst00000491865",
+                        "label": "transcript",
+                        "transcript_name": "TRIT1-211",
+                        "gene_name": "TRIT1",
+                        "anchor": false,
+                        "x": 134.0590518547878,
+                        "y": 137.61826291770697
+                },
+                {
+                        "id": "q9h3h1-4",
+                        "label": "protein",
+                        "protein_name": "MOD5",
+                        "isoform_name": "4",
+                        "anchor": false,
+                        "x": -93.3767504466559,
+                        "y": 183.95972216092807
+                },
+                {
+                        "id": "q9h3h1-5",
+                        "label": "protein",
+                        "protein_name": "MOD5",
+                        "isoform_name": "5",
+                        "anchor": false,
+                        "x": 200.0,
+                        "y": -83.77624813100846
+                },
+                {
+                        "id": "enst00000465417",
+                        "label": "transcript",
+                        "transcript_name": "TRIT1-206",
+                        "gene_name": "TRIT1",
+                        "anchor": false,
+                        "x": -151.2725718127031,
+                        "y": -93.40322484041486
+                },
+                {
+                        "id": "enst00000467774",
+                        "label": "transcript",
+                        "transcript_name": "TRIT1-207",
+                        "gene_name": "TRIT1",
+                        "anchor": false,
+                        "x": -166.33749633917537,
+                        "y": 4.219155404037533
+                },
+                {
+                        "id": "enst00000462243",
+                        "label": "transcript",
+                        "transcript_name": "TRIT1-204",
+                        "gene_name": "TRIT1",
+                        "anchor": false,
+                        "x": 18.033079069290444,
+                        "y": -188.57476352637613
+                },
+                {
+                        "id": "ensg00000043514",
+                        "label": "gene",
+                        "gene_name": "TRIT1",
+                        "anchor": true,
+                        "x": 94.7669066451839,
+                        "y": -116.27623781038359
+                }
+        ],
+        "edges": [
+                {
+                        "label": "translates_to",
+                        "weight": 1.0,
+                        "source": "enst00000316891",
+                        "target": "q9h3h1-1",
+                        "directed": true,
+                        "direction": "enst00000316891 -> q9h3h1-1",
+                },
+                {
+                        "label": "translates_to",
+                        "weight": 1.0,
+                        "source": "enst00000441669",
+                        "target": "q9h3h1-5",
+                        "directed": true,
+                        "direction": "enst00000441669 -> q9h3h1-5",
+                },
+                {
+                        "label": "translates_to",
+                        "weight": 1.0,
+                        "source": "enst00000372818",
+                        "target": "q9h3h1-4",
+                        "directed": true,
+                        "direction": "enst00000372818 -> q9h3h1-4",
+                },
+                {
+                        "label": "transcribed_to",
+                        "weight": 1.0,
+                        "source": "ensg00000043514",
+                        "target": "enst00000316891",
+                        "directed": true,
+                        "direction": "ensg00000043514 -> enst00000316891",
+                },
+                {
+                        "label": "transcribed_to",
+                        "weight": 1.0,
+                        "source": "ensg00000043514",
+                        "target": "enst00000441669",
+                        "directed": true,
+                        "direction": "ensg00000043514 -> enst00000441669",
+                },
+                {
+                        "label": "transcribed_to",
+                        "weight": 1.0,
+                        "source": "ensg00000043514",
+                        "target": "enst00000372818",
+                        "directed": true,
+                        "direction": "ensg00000043514 -> enst00000372818",
+                },
+                {
+                        "label": "transcribed_to",
+                        "weight": 1.0,
+                        "source": "ensg00000043514",
+                        "target": "enst00000491865",
+                        "directed": true,
+                        "direction": "ensg00000043514 -> enst00000491865",
+                },
+                {
+                        "label": "transcribed_to",
+                        "weight": 1.0,
+                        "source": "ensg00000043514",
+                        "target": "enst00000465417",
+                        "directed": true,
+                        "direction": "ensg00000043514 -> enst00000465417",
+                },
+                {
+                        "label": "transcribed_to",
+                        "weight": 1.0,
+                        "source": "ensg00000043514",
+                        "target": "enst00000467774",
+                        "directed": true,
+                        "direction": "ensg00000043514 -> enst00000467774",
+                },
+                {
+                        "label": "transcribed_to",
+                        "weight": 1.0,
+                        "source": "ensg00000043514",
+                        "target": "enst00000462243",
+                        "directed": true,
+                        "direction": "ensg00000043514 -> enst00000462243",
+                }
+        ],
+        "legend": {
+                "nodeTypes": [
+                        {
+                                "label": "gene",
+                                "color": "rgba(59, 130, 246, 0.7)",
+                                "description": "gene"
+                        },
+                        {
+                                "label": "transcript",
+                                "color": "rgba(34, 197, 94, 0.7)",
+                                "description": "transcript"
+                        },
+                        {
+                                "label": "protein",
+                                "color": "rgba(245, 101, 101, 0.7)",
+                                "description": "Protein"
+                        }
+                ],
+                "edgeTypes": [
+                        {
+                                "label": "transcribed_to",
+                                "color": "rgba(34, 100, 94, 0.7)",
+                                "description": "transcribed_to"
+                        },
+                        {
+                                "label": "translates_to",
+                                "color": "rgba(245, 190, 101, 0.7)",
+                                "description": "translates_to"
+                        }
+                    ]
+                }
+            };
