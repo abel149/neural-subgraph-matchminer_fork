@@ -718,7 +718,7 @@ def visualize_pattern_graph_ext(pattern, args, count_by_size):
         try:
             import os
             # Ensure output directory exists
-            output_dir = os.path.join(os.path.dirname(__file__), "../../plots/cluster")
+            output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "plots/cluster"))
             output_dir = os.path.abspath(output_dir)
             os.makedirs(output_dir, exist_ok=True)
 
