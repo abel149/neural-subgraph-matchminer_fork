@@ -413,3 +413,244 @@ def safe_extract_graph_data(graph: nx.Graph) -> Optional[Dict[str, Any]]:
     Safely extract graph data with comprehensive error handling.
     """
     return extract_graph_data(graph)
+
+
+class HTMLTemplateProcessor:
+    """
+    Processes HTML templates and injects graph data for visualization.
+    """
+    
+    def __init__(self, template_path: str = "template.html"):
+        """
+        Initialize the HTML template processor.
+        """
+        self.template_path = template_path
+        self.template_content = None
+        
+    def read_template(self) -> str:
+        """
+        Read template.html file from filesystem.
+        """
+        try:
+            with open(self.template_path, 'r', encoding='utf-8') as file:
+                content = file.read()
+                
+            if not content.strip():
+                raise ValueError(f"Template file {self.template_path} is empty")
+                
+            # Validate that it's a proper HTML template with required sections
+            if not self._validate_template_structure(content):
+                raise ValueError(f"Template file {self.template_path} is missing required structure")
+                
+            self.template_content = content
+            return content
+            
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Template file not found: {self.template_path}")
+        except IOError as e:
+            raise IOError(f"Failed to read template file {self.template_path}: {str(e)}")
+    
+    def _validate_template_structure(self, content: str) -> bool:
+        """
+        Validate that template has required structure for data injection.
+        """
+        required_elements = [
+            '<script>',
+            'const GRAPH_DATA',
+            '</script>',
+            '<canvas id="graph-canvas">',
+            '<div id="legend-content">'
+        ]
+        
+        return all(element in content for element in required_elements)
+    
+    def inject_graph_data(self, template_content: str, graph_data: Dict[str, Any]) -> str:
+        """
+        Build data injection system to embed graph data into JavaScript section.
+        """
+        if not template_content or not template_content.strip():
+            raise ValueError("Template content cannot be empty")
+            
+        if not graph_data or not isinstance(graph_data, dict):
+            raise ValueError("Graph data must be a non-empty dictionary")
+            
+        # Validate graph data structure
+        if not validate_graph_data(graph_data):
+            raise ValueError("Graph data has invalid structure")
+        
+        try:
+            # Convert graph data to JSON with proper formatting
+            json_data = json.dumps(graph_data, indent=8, ensure_ascii=False)
+            
+            # Find the GRAPH_DATA placeholder and replace it
+            # Look for the pattern: const GRAPH_DATA = { ... };
+            import re
+            
+            # Pattern to match the GRAPH_DATA assignment
+            pattern = r'const GRAPH_DATA\s*=\s*\{[^}]*\}(?:\s*,\s*\{[^}]*\})*\s*;'
+            
+            # Create replacement with properly formatted JSON
+            replacement = f'const GRAPH_DATA = {json_data};'
+            
+            # Perform the replacement
+            if re.search(pattern, template_content, re.DOTALL):
+                injected_content = re.sub(pattern, replacement, template_content, flags=re.DOTALL)
+            else:
+                # Fallback: look for simpler pattern
+                simple_pattern = r'const GRAPH_DATA\s*=\s*[^;]+;'
+                if re.search(simple_pattern, template_content, re.DOTALL):
+                    injected_content = re.sub(simple_pattern, replacement, template_content, flags=re.DOTALL)
+                else:
+                    raise RuntimeError("Could not find GRAPH_DATA placeholder in template")
+            
+            # Verify injection was successful
+            if 'const GRAPH_DATA' not in injected_content:
+                raise RuntimeError("Data injection failed - GRAPH_DATA not found in result")
+                
+            return injected_content
+            
+        except json.JSONEncodeError as e:
+            raise RuntimeError(f"Failed to serialize graph data to JSON: {str(e)}")
+        except Exception as e:
+            raise RuntimeError(f"Data injection failed: {str(e)}")
+    
+    def generate_filename(self, graph_data: Dict[str, Any], base_name: str = "pattern") -> str:
+        """
+        Implement filename generation based on graph characteristics.
+        """
+        if not graph_data or not isinstance(graph_data, dict):
+            raise ValueError("Graph data must be a non-empty dictionary")
+            
+        if 'metadata' not in graph_data:
+            raise ValueError("Graph data must contain metadata section")
+        
+        metadata = graph_data['metadata']
+        
+        try:
+            # Extract characteristics for filename generation
+            node_count = metadata.get('nodeCount', 0)
+            edge_count = metadata.get('edgeCount', 0)
+            is_directed = metadata.get('isDirected', False)
+            density = metadata.get('density', 0)
+            
+            # Generate descriptive filename components
+            components = [base_name]
+            
+            # Add node count
+            components.append(f"{node_count}n")
+            
+            # Add edge count
+            components.append(f"{edge_count}e")
+            
+            # Add direction indicator
+            if is_directed:
+                components.append("directed")
+            else:
+                components.append("undirected")
+            
+            # Add density category
+            if density < 0.1:
+                components.append("sparse")
+            elif density < 0.5:
+                components.append("medium")
+            else:
+                components.append("dense")
+            
+            # Join components with underscores
+            filename = "_".join(components) + ".html"
+            
+            # Ensure filename is filesystem-safe
+            filename = self._sanitize_filename(filename)
+            
+            return filename
+            
+        except Exception as e:
+            # Fallback to simple naming scheme
+            timestamp = int(time.time()) if 'time' in globals() else random.randint(1000, 9999)
+            return f"{base_name}_{timestamp}.html"
+    
+    def _sanitize_filename(self, filename: str) -> str:
+        """
+        Sanitize filename to be filesystem-safe.
+        """
+        import re
+        
+        # Remove or replace invalid characters
+        filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        
+        # Remove multiple consecutive underscores
+        filename = re.sub(r'_+', '_', filename)
+        
+        # Ensure reasonable length
+        if len(filename) > 100:
+            name_part = filename.rsplit('.', 1)[0][:90]
+            extension = filename.rsplit('.', 1)[1] if '.' in filename else 'html'
+            filename = f"{name_part}.{extension}"
+        
+        return filename
+    
+    def write_html_file(self, content: str, filename: str, output_dir: str = ".") -> str:
+        """
+        Add file writing functionality to create new HTML files.
+        """
+        if not content or not content.strip():
+            raise ValueError("Content cannot be empty")
+            
+        if not filename or not filename.strip():
+            raise ValueError("Filename cannot be empty")
+        
+        # Ensure filename has .html extension
+        if not filename.lower().endswith('.html'):
+            filename += '.html'
+        
+        # Create full path
+        import os
+        full_path = os.path.join(output_dir, filename)
+        
+        try:
+            # Ensure output directory exists
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Write the file
+            with open(full_path, 'w', encoding='utf-8') as file:
+                file.write(content)
+            
+            # Verify file was written successfully
+            if not os.path.exists(full_path):
+                raise IOError(f"File was not created: {full_path}")
+                
+            # Verify file has content
+            if os.path.getsize(full_path) == 0:
+                raise IOError(f"File was created but is empty: {full_path}")
+            
+            return full_path
+            
+        except IOError as e:
+            raise IOError(f"Failed to write HTML file {full_path}: {str(e)}")
+        except Exception as e:
+            raise IOError(f"Unexpected error writing file {full_path}: {str(e)}")
+    
+    def process_template(self, graph_data: Dict[str, Any], 
+                        output_filename: Optional[str] = None,
+                        output_dir: str = ".") -> str:
+        """
+        Complete template processing workflow: read, inject, and write.
+        """
+        try:
+            # Step 1: Read template file
+            template_content = self.read_template()
+            
+            # Step 2: Inject graph data
+            injected_content = self.inject_graph_data(template_content, graph_data)
+            
+            # Step 3: Generate filename if not provided
+            if output_filename is None:
+                output_filename = self.generate_filename(graph_data)
+            
+            # Step 4: Write HTML file
+            output_path = self.write_html_file(injected_content, output_filename, output_dir)
+            
+            return output_path
+            
+        except Exception as e:
+            raise RuntimeError(f"Template processing failed: {str(e)}")
