@@ -2778,3 +2778,737 @@
                 }
             }
         }
+
+        // Export System
+        class ExportManager {
+            constructor(canvas) {
+                this.canvas = canvas;
+            }
+            generateGraphSVGString(width, height) {
+                const svgns = "http://www.w3.org/2000/svg";
+                const svgElem = document.createElementNS(svgns, "svg");
+                svgElem.setAttribute("width", width);
+                svgElem.setAttribute("height", height);
+                svgElem.setAttribute("xmlns", svgns);
+                svgElem.setAttribute("style", "background: #fafafa");
+
+                // --- Draw grid pattern (20x20 dots) ---
+                for (let x = 0; x < width; x += 20) {
+                    for (let y = 0; y < height; y += 20) {
+                        const dot = document.createElementNS(svgns, "circle");
+                        dot.setAttribute("cx", x + 1);
+                        dot.setAttribute("cy", y + 1);
+                        dot.setAttribute("r", 1);
+                        dot.setAttribute("fill", "rgba(0,0,0,0.02)");
+                        svgElem.appendChild(dot);
+                    }
+                }
+
+                // --- Draw edges ---
+                const nodeMap = {};
+                GRAPH_DATA.nodes.forEach(node => nodeMap[node.id] = node);
+
+                GRAPH_DATA.edges.forEach(edge => {
+                    const source = nodeMap[edge.source];
+                    const target = nodeMap[edge.target];
+                    if (!source || !target) return;
+                    const line = document.createElementNS(svgns, "line");
+                    line.setAttribute("x1", source.x);
+                    line.setAttribute("y1", source.y);
+                    line.setAttribute("x2", target.x);
+                    line.setAttribute("y2", target.y);
+                    line.setAttribute("stroke", window.styleManager.getEdgeColor(edge.label));
+                    line.setAttribute("stroke-width", 3);
+                    svgElem.appendChild(line);
+
+                    // Edge label (midpoint)
+                    if (edge.label) {
+                        const midX = (source.x + target.x) / 2;
+                        const midY = (source.y + target.y) / 2;
+                        const text = document.createElementNS(svgns, "text");
+                        text.setAttribute("x", midX);
+                        text.setAttribute("y", midY - 6);
+                        text.setAttribute("font-size", "12");
+                        text.setAttribute("text-anchor", "middle");
+                        text.setAttribute("fill", "#333");
+                        text.textContent = edge.label;
+                        svgElem.appendChild(text);
+                    }
+                });
+
+                // --- Draw nodes ---
+                GRAPH_DATA.nodes.forEach(node => {
+                    if (node.anchor) {
+                        // Anchor as square
+                        const rect = document.createElementNS(svgns, "rect");
+                        rect.setAttribute("x", node.x - 60);
+                        rect.setAttribute("y", node.y - 60);
+                        rect.setAttribute("width", 120);
+                        rect.setAttribute("height", 120);
+                        rect.setAttribute("fill", "rgba(239, 68, 68, 0.8)");
+                        rect.setAttribute("stroke", "rgba(0,0,0,0.3)");
+                        rect.setAttribute("stroke-width", 3);
+                        svgElem.appendChild(rect);
+                    } else {
+                        // Regular node as circle
+                        const circle = document.createElementNS(svgns, "circle");
+                        circle.setAttribute("cx", node.x);
+                        circle.setAttribute("cy", node.y);
+                        circle.setAttribute("r", 50);
+                        circle.setAttribute("fill", window.styleManager.getNodeColor(node.label));
+                        circle.setAttribute("stroke", "rgba(0,0,0,0.3)");
+                        circle.setAttribute("stroke-width", 3);
+                        svgElem.appendChild(circle);
+                    }
+
+                    // Node label (multi-line)
+                    let label = node.display_label || node.label;
+                    const lines = label.split('\n');
+                    lines.forEach((line, i) => {
+                        const text = document.createElementNS(svgns, "text");
+                        text.setAttribute("x", node.x);
+                        text.setAttribute("y", node.y + (i - (lines.length-1)/2) * 16);
+                        text.setAttribute("font-size", "14");
+                        text.setAttribute("text-anchor", "middle");
+                        text.setAttribute("fill", "#222");
+                        text.textContent = line;
+                        svgElem.appendChild(text);
+                    });
+                });
+
+                // --- Draw legend (bottom right) ---
+                const nodeTypes = (GRAPH_DATA.legend && GRAPH_DATA.legend.nodeTypes) || [];
+                const edgeTypes = (GRAPH_DATA.legend && GRAPH_DATA.legend.edgeTypes) || [];
+                const legendWidth = 240, legendHeight = 80 + 28 * nodeTypes.length + 24 * edgeTypes.length + 60;
+                const legendX = width - legendWidth - 32, legendY = height - legendHeight - 32;
+
+                const legendBg = document.createElementNS(svgns, "rect");
+                legendBg.setAttribute("x", legendX);
+                legendBg.setAttribute("y", legendY);
+                legendBg.setAttribute("width", legendWidth);
+                legendBg.setAttribute("height", legendHeight);
+                legendBg.setAttribute("rx", 14);
+                legendBg.setAttribute("fill", "white");
+                legendBg.setAttribute("stroke", "rgba(0,0,0,0.12)");
+                legendBg.setAttribute("stroke-width", 2);
+                svgElem.appendChild(legendBg);
+
+                let legendYPos = legendY + 28;
+                // Title
+                const legendTitle = document.createElementNS(svgns, "text");
+                legendTitle.setAttribute("x", legendX + 16);
+                legendTitle.setAttribute("y", legendYPos);
+                legendTitle.setAttribute("font-size", "16");
+                legendTitle.setAttribute("font-weight", "bold");
+                legendTitle.setAttribute("fill", "#222");
+                legendTitle.textContent = "Legend";
+                svgElem.appendChild(legendTitle);
+                legendYPos += 28;
+
+                // Node Types
+                if (nodeTypes.length > 0) {
+                    const nodeTypeHeader = document.createElementNS(svgns, "text");
+                    nodeTypeHeader.setAttribute("x", legendX + 16);
+                    nodeTypeHeader.setAttribute("y", legendYPos);
+                    nodeTypeHeader.setAttribute("font-size", "13");
+                    nodeTypeHeader.setAttribute("fill", "#666");
+                    nodeTypeHeader.textContent = "Node Types";
+                    svgElem.appendChild(nodeTypeHeader);
+                    legendYPos += 20;
+
+                    nodeTypes.forEach(nt => {
+                        const box = document.createElementNS(svgns, "rect");
+                        box.setAttribute("x", legendX + 16);
+                        box.setAttribute("y", legendYPos - 10);
+                        box.setAttribute("width", 18);
+                        box.setAttribute("height", 18);
+                        box.setAttribute("rx", 4);
+                        box.setAttribute("fill", nt.color);
+                        box.setAttribute("stroke", "#bbb");
+                        box.setAttribute("stroke-width", 1);
+                        svgElem.appendChild(box);
+
+                        const label = document.createElementNS(svgns, "text");
+                        label.setAttribute("x", legendX + 44);
+                        label.setAttribute("y", legendYPos + 4);
+                        label.setAttribute("font-size", "13");
+                        label.setAttribute("fill", "#222");
+                        label.textContent = nt.label;
+                        svgElem.appendChild(label);
+
+                        legendYPos += 28;
+                    });
+                }
+
+                // Edge Types
+                if (edgeTypes.length > 0) {
+                    const edgeTypeHeader = document.createElementNS(svgns, "text");
+                    edgeTypeHeader.setAttribute("x", legendX + 16);
+                    edgeTypeHeader.setAttribute("y", legendYPos);
+                    edgeTypeHeader.setAttribute("font-size", "13");
+                    edgeTypeHeader.setAttribute("fill", "#666");
+                    edgeTypeHeader.textContent = "Edge Types";
+                    svgElem.appendChild(edgeTypeHeader);
+                    legendYPos += 20;
+
+                    edgeTypes.forEach(et => {
+                        const line = document.createElementNS(svgns, "rect");
+                        line.setAttribute("x", legendX + 16);
+                        line.setAttribute("y", legendYPos - 3);
+                        line.setAttribute("width", 18);
+                        line.setAttribute("height", 6);
+                        line.setAttribute("rx", 2);
+                        line.setAttribute("fill", et.color);
+                        line.setAttribute("stroke", "#bbb");
+                        line.setAttribute("stroke-width", 1);
+                        svgElem.appendChild(line);
+
+                        const label = document.createElementNS(svgns, "text");
+                        label.setAttribute("x", legendX + 44);
+                        label.setAttribute("y", legendYPos + 4);
+                        label.setAttribute("font-size", "13");
+                        label.setAttribute("fill", "#222");
+                        label.textContent = et.label;
+                        svgElem.appendChild(label);
+
+                        legendYPos += 24;
+                    });
+                }
+
+                // Anchor Nodes
+                const anchorHeader = document.createElementNS(svgns, "text");
+                anchorHeader.setAttribute("x", legendX + 16);
+                anchorHeader.setAttribute("y", legendYPos);
+                anchorHeader.setAttribute("font-size", "13");
+                anchorHeader.setAttribute("fill", "#666");
+                anchorHeader.textContent = "Special Nodes";
+                svgElem.appendChild(anchorHeader);
+                legendYPos += 20;
+
+                const anchorBox = document.createElementNS(svgns, "rect");
+                anchorBox.setAttribute("x", legendX + 16);
+                anchorBox.setAttribute("y", legendYPos - 10);
+                anchorBox.setAttribute("width", 18);
+                anchorBox.setAttribute("height", 18);
+                anchorBox.setAttribute("rx", 2);
+                anchorBox.setAttribute("fill", "rgba(239, 68, 68, 0.8)");
+                anchorBox.setAttribute("stroke", "#bbb");
+                anchorBox.setAttribute("stroke-width", 1);
+                svgElem.appendChild(anchorBox);
+
+                const anchorLabel = document.createElementNS(svgns, "text");
+                anchorLabel.setAttribute("x", legendX + 44);
+                anchorLabel.setAttribute("y", legendYPos + 4);
+                anchorLabel.setAttribute("font-size", "13");
+                anchorLabel.setAttribute("fill", "#222");
+                anchorLabel.textContent = "Anchor Nodes";
+                svgElem.appendChild(anchorLabel);
+
+                // --- Serialize to string ---
+                const serializer = new XMLSerializer();
+                return serializer.serializeToString(svgElem);
+            }
+
+            async exportToPDF() {
+                const { PDFDocument, rgb, degrees, StandardFonts } = window.PDFLib;
+                const width = this.canvas.width;
+                const height = this.canvas.height;
+
+                // Create a new PDF document and page
+                const pdfDoc = await PDFDocument.create();
+                const page = pdfDoc.addPage([width, height]);
+                const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+                // Draw grid pattern (20x20 dots)
+                for (let x = 0; x < width; x += 20) {
+                    for (let y = 0; y < height; y += 20) {
+                        page.drawCircle({
+                            x: x + 1,
+                            y: height - (y + 1),
+                            size: 1,
+                            color: rgb(0, 0, 0),
+                            opacity: 0.02,
+                            borderWidth: 0,
+                        });
+                    }
+                }
+
+                // Draw edges
+                const nodeMap = {};
+                GRAPH_DATA.nodes.forEach(node => nodeMap[node.id] = node);
+
+                GRAPH_DATA.edges.forEach(edge => {
+                    const source = nodeMap[edge.source];
+                    const target = nodeMap[edge.target];
+                    if (!source || !target) return;
+                    const [r, g, b, a] = parseRgba(window.styleManager.getEdgeColor(edge.label));
+                    page.drawLine({
+                        start: { x: source.x, y: height - source.y },
+                        end: { x: target.x, y: height - target.y },
+                        thickness: 3,
+                        color: rgb(r, g, b),
+                        opacity: a,
+                    });
+
+                    // Edge label (midpoint, with white bg)
+                    if (edge.label) {
+                        const midX = (source.x + target.x) / 2;
+                        const midY = (source.y + target.y) / 2;
+                        const fontSize = 12;
+                        const padding = 4;
+                        const textWidth = font.widthOfTextAtSize(edge.label, fontSize);
+                        const textHeight = fontSize;
+                        const bgWidth = textWidth + padding * 2;
+                        const bgHeight = textHeight + padding * 2;
+                        // Draw white background
+                        page.drawRectangle({
+                            x: midX - bgWidth / 2,
+                            y: height - midY - bgHeight / 2,
+                            width: bgWidth,
+                            height: bgHeight,
+                            color: rgb(1, 1, 1),
+                            opacity: 0.95,
+                            borderWidth: 0,
+                        });
+                        // Draw text
+                        page.drawText(edge.label, {
+                            x: midX - textWidth / 2,
+                            y: height - midY - bgHeight / 2 + padding,
+                            size: fontSize,
+                            font,
+                            color: rgb(0.2, 0.2, 0.2),
+                        });
+                    }
+                });
+
+                // Draw nodes
+                GRAPH_DATA.nodes.forEach(node => {
+                    if (node.anchor) {
+                        // Anchor as square
+                        page.drawRectangle({
+                            x: node.x - 60,
+                            y: height - (node.y + 60),
+                            width: 120,
+                            height: 120,
+                            color: rgb(239/255, 68/255, 68/255),
+                            opacity: 0.8,
+                            borderColor: rgb(0, 0, 0),
+                            borderWidth: 3,
+                        });
+                    } else {
+                        // Regular node as circle
+                        const [r, g, b, a] = parseRgba(window.styleManager.getNodeColor(node.label));
+                        page.drawCircle({
+                            x: node.x,
+                            y: height - node.y,
+                            size: 50,
+                            color: rgb(r, g, b),
+                            opacity: a,
+                            borderColor: rgb(0, 0, 0),
+                            borderWidth: 3,
+                        });
+                    }
+
+                    // Node label (multi-line, with white rounded rect background)
+                    let label = node.display_label || node.label;
+                    const lines = label.split('\n');
+                    const fontSize = 14;
+                    const padding = 6;
+                    let maxLineWidth = 0;
+                    lines.forEach(line => {
+                        const width = font.widthOfTextAtSize(line, fontSize);
+                        if (width > maxLineWidth) maxLineWidth = width;
+                    });
+                    const bgWidth = maxLineWidth + padding * 2;
+                    const bgHeight = lines.length * fontSize + padding * 2;
+                    const rectX = node.x - bgWidth / 2;
+                    const rectY = height - node.y - bgHeight / 2;
+
+                    // Draw white rounded rectangle background (no border)
+                    drawRoundedRect(page, rectX, rectY, bgWidth, bgHeight, 6, rgb(1, 1, 1), 0.95);
+
+                    // Draw each line of label (centered)
+                    lines.forEach((line, i) => {
+                        page.drawText(line, {
+                            x: node.x - font.widthOfTextAtSize(line, fontSize) / 2,
+                            y: height - (node.y + (i - (lines.length - 1) / 2) * fontSize) - fontSize / 2,
+                            size: fontSize,
+                            font,
+                            color: rgb(0.13, 0.13, 0.13),
+                        });
+                    });
+                });
+
+                // Draw legend (bottom right)
+                const nodeTypes = (GRAPH_DATA.legend && GRAPH_DATA.legend.nodeTypes) || [];
+                const edgeTypes = (GRAPH_DATA.legend && GRAPH_DATA.legend.edgeTypes) || [];
+                const legendWidth = 240, legendHeight = 80 + 28 * nodeTypes.length + 24 * edgeTypes.length + 60;
+                const legendX = width - legendWidth - 32, legendY = height - legendHeight - 32;
+
+                // Legend background
+                page.drawRectangle({
+                    x: legendX,
+                    y: legendY,
+                    width: legendWidth,
+                    height: legendHeight,
+                    color: rgb(1, 1, 1),
+                    opacity: 0.97,
+                    borderColor: rgb(0, 0, 0),
+                    borderWidth: 2,
+                });
+
+                let legendYPos = legendY + legendHeight - 28;
+                // Title
+                page.drawText("Legend", {
+                    x: legendX + 16,
+                    y: legendYPos,
+                    size: 16,
+                    font,
+                    color: rgb(0.13, 0.13, 0.13),
+                });
+                legendYPos -= 28;
+                // Node Types
+                if (nodeTypes.length > 0) {
+                    page.drawText("Node Types", {
+                        x: legendX + 16,
+                        y: legendYPos,
+                        size: 13,
+                        font,
+                        color: rgb(0.4, 0.4, 0.4),
+                    });
+                    legendYPos -= 20;
+
+                    nodeTypes.forEach(nt => {
+                        const [r, g, b, a] = parseRgba(nt.color);
+                        // Color box
+                        const boxY = legendYPos - 10;
+                        page.drawRectangle({
+                            x: legendX + 16,
+                            y: boxY,
+                            width: 18,
+                            height: 18,
+                            color: rgb(r, g, b),
+                            opacity: a,
+                            borderColor: rgb(0.73, 0.73, 0.73),
+                            borderWidth: 1,
+                        });
+                        // Vertically center text with box
+                        page.drawText(nt.label, {
+                            x: legendX + 44,
+                            y: boxY + 9 - 6, // 9 is half of 18, -6 to visually center with font size 13
+                            size: 13,
+                            font,
+                            color: rgb(0.13, 0.13, 0.13),
+                        });
+                        legendYPos -= 28;
+                    });
+                }
+
+                // Edge Types
+                if (edgeTypes.length > 0) {
+                    page.drawText("Edge Types", {
+                        x: legendX + 16,
+                        y: legendYPos,
+                        size: 13,
+                        font,
+                        color: rgb(0.4, 0.4, 0.4),
+                    });
+                    legendYPos -= 20;
+
+                    edgeTypes.forEach(et => {
+                        const [r, g, b, a] = parseRgba(et.color);
+                        // Color line (rectangle)
+                        const lineY = legendYPos + 9 - 3; // 9 is half of 18, -3 to center 6px line
+                        page.drawRectangle({
+                            x: legendX + 16,
+                            y: lineY,
+                            width: 18,
+                            height: 6,
+                            color: rgb(r, g, b),
+                            opacity: a,
+                            borderColor: rgb(0.73, 0.73, 0.73),
+                            borderWidth: 1,
+                        });
+                        // Vertically center text with line
+                        page.drawText(et.label, {
+                            x: legendX + 44,
+                            y: lineY + 3 - 6, // 3 is half of 6, -6 to visually center with font size 13
+                            size: 13,
+                            font,
+                            color: rgb(0.13, 0.13, 0.13),
+                        });
+                        legendYPos -= 24;
+                    });
+                }
+
+                // Anchor Nodes
+                page.drawText("Special Nodes", {
+                    x: legendX + 16,
+                    y: legendYPos,
+                    size: 13,
+                    font,
+                    color: rgb(0.4, 0.4, 0.4),
+                });
+                legendYPos -= 20;
+
+                const anchorBoxY = legendYPos - 10;
+                page.drawRectangle({
+                    x: legendX + 16,
+                    y: anchorBoxY,
+                    width: 18,
+                    height: 18,
+                    color: rgb(239/255, 68/255, 68/255),
+                    opacity: 0.8,
+                    borderColor: rgb(0.73, 0.73, 0.73),
+                    borderWidth: 1,
+                });
+                page.drawText("Anchor Nodes", {
+                    x: legendX + 44,
+                    y: anchorBoxY + 9 - 6,
+                    size: 13,
+                    font,
+                    color: rgb(0.13, 0.13, 0.13),
+                });
+
+                // Save and download
+                const pdfBytes = await pdfDoc.save();
+                const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `graph_visualization_${new Date().getTime()}.pdf`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+
+                // --- Helper: parse rgba/hex color to [r,g,b,a] in 0-1 range ---
+                function parseRgba(color) {
+                    if (!color) return [0, 0, 0, 1];
+                    if (color.startsWith('rgba')) {
+                        const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+),?\s*([\d\.]+)?\)/);
+                        if (!match) return [0, 0, 0, 1];
+                        return [
+                            parseInt(match[1]) / 255,
+                            parseInt(match[2]) / 255,
+                            parseInt(match[3]) / 255,
+                            match[4] !== undefined ? parseFloat(match[4]) : 1
+                        ];
+                    } else if (color.startsWith('rgb')) {
+                        const match = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+                        if (!match) return [0, 0, 0, 1];
+                        return [
+                            parseInt(match[1]) / 255,
+                            parseInt(match[2]) / 255,
+                            parseInt(match[3]) / 255,
+                            1
+                        ];
+                    } else if (color.startsWith('#')) {
+                        let hex = color.replace('#', '');
+                        if (hex.length === 3) hex = hex.split('').map(x => x + x).join('');
+                        const num = parseInt(hex, 16);
+                        return [
+                            ((num >> 16) & 255) / 255,
+                            ((num >> 8) & 255) / 255,
+                            (num & 255) / 255,
+                            1
+                        ];
+                    }
+                    return [0, 0, 0, 1];
+                }
+
+                // --- Helper: draw rounded rectangle (pdf-lib doesn't have built-in) ---
+                function drawRoundedRect(page, x, y, width, height, radius, fillColor, fillAlpha = 1) {
+                    page.drawRectangle({
+                        x, y, width, height,
+                        borderWidth: 0,
+                        color: fillColor,
+                        opacity: fillAlpha,
+                    });
+                }
+            }
+
+            exportHighQualityPNG(scale = 1) {
+                const origCanvas = this.canvas;
+                const origCtx = origCanvas.getContext('2d');
+                const width = origCanvas.width;
+                const height = origCanvas.height;
+
+                // Create off-screen canvas
+                const exportCanvas = document.createElement('canvas');
+                exportCanvas.width = width * scale;
+                exportCanvas.height = height * scale;
+                const exportCtx = exportCanvas.getContext('2d');
+
+                // Scale everything
+                exportCtx.setTransform(scale, 0, 0, scale, 0, 0);
+
+                // Draw background pattern (copy your CSS pattern logic)
+                exportCtx.fillStyle = getComputedStyle(document.body).getPropertyValue('--bg-primary') || '#fafafa';
+                exportCtx.fillRect(0, 0, width, height);
+
+                // Draw the pattern (20x20 grid of dots)
+                exportCtx.save();
+                exportCtx.globalAlpha = 1;
+                exportCtx.fillStyle = 'rgba(0,0,0,0.02)';
+                for (let x = 0; x < width; x += 20) {
+                    for (let y = 0; y < height; y += 20) {
+                        exportCtx.beginPath();
+                        exportCtx.arc(x + 1, y + 1, 1, 0, 2 * Math.PI);
+                        exportCtx.fill();
+                    }
+                }
+                exportCtx.restore();
+
+                // Draw the graph at scale
+                const oldCanvas = window.canvasNavigator.canvas;
+                const oldCtx = window.canvasNavigator.ctx;
+                window.canvasNavigator.canvas = exportCanvas;
+                window.canvasNavigator.ctx = exportCtx;
+
+                // Render the graph (with legend)
+                window.canvasNavigator.render();
+
+                // Draw the legend card (as in drawLegendOnCanvas)
+                if (window.exportManager && window.exportManager.drawLegendOnCanvas) {
+                    window.exportManager.drawLegendOnCanvas(exportCtx, scale);
+                }
+
+                // Restore the original canvas/context
+                window.canvasNavigator.canvas = oldCanvas;
+                window.canvasNavigator.ctx = oldCtx;
+
+                // Export as PNG
+                exportCanvas.toBlob(blob => {
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = `graph_visualization_${new Date().getTime()}_hq.png`;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(link.href);
+                }, 'image/png');
+            }
+
+            drawLegendOnCanvas(ctx = this.canvas.getContext('2d'), scale = 1) {
+                // Legend dimensions and position (bottom right)
+                const canvasWidth = this.canvas.width * scale;
+                const canvasHeight = this.canvas.height * scale;
+                const legendWidth = 240 * scale;
+                const nodeTypes = (GRAPH_DATA.legend && GRAPH_DATA.legend.nodeTypes) || [];
+                const edgeTypes = (GRAPH_DATA.legend && GRAPH_DATA.legend.edgeTypes) || [];
+                const nodeCount = nodeTypes.length;
+                const edgeCount = edgeTypes.length;
+                const legendHeight = (80 + 28 * nodeCount + 24 * edgeCount + 60) * scale;
+                const padding = 16 * scale;
+                const x = canvasWidth - legendWidth - 32 * scale;
+                const y = canvasHeight - legendHeight - 32 * scale;
+
+                // Draw background
+                ctx.save();
+                ctx.resetTransform && ctx.resetTransform();
+                ctx.beginPath();
+                const radius = 14 * scale;
+                ctx.moveTo(x + radius, y);
+                ctx.lineTo(x + legendWidth - radius, y);
+                ctx.quadraticCurveTo(x + legendWidth, y, x + legendWidth, y + radius);
+                ctx.lineTo(x + legendWidth, y + legendHeight - radius);
+                ctx.quadraticCurveTo(x + legendWidth, y + legendHeight, x + legendWidth - radius, y + legendHeight);
+                ctx.lineTo(x + radius, y + legendHeight);
+                ctx.quadraticCurveTo(x, y + legendHeight, x, y + legendHeight - radius);
+                ctx.lineTo(x, y + radius);
+                ctx.quadraticCurveTo(x, y, x + radius, y);
+                ctx.closePath();
+                ctx.fillStyle = 'rgba(255,255,255,0.97)';
+                ctx.fill();
+                ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+                ctx.lineWidth = 2 * scale;
+                ctx.stroke();
+
+                // Draw "Legend" title
+                ctx.fillStyle = '#222';
+                ctx.font = `${16 * scale}px sans-serif`;
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'top';
+                ctx.fillText('Legend', x + padding, y + padding);
+
+                let currentY = y + padding + 24 * scale;
+
+                // Node Types
+                if (nodeCount > 0) {
+                    ctx.font = `${13 * scale}px sans-serif`;
+                    ctx.fillStyle = '#666';
+                    ctx.textBaseline = 'top';
+                    ctx.fillText('Node Types', x + padding, currentY);
+                    currentY += 20 * scale;
+                    nodeTypes.forEach(nt => {
+                        // Color box
+                        const boxY = currentY;
+                        ctx.fillStyle = nt.color;
+                        ctx.strokeStyle = '#bbb';
+                        ctx.lineWidth = 1 * scale;
+                        ctx.beginPath();
+                        ctx.roundRect(x + padding, boxY, 18 * scale, 18 * scale, 4 * scale);
+                        ctx.fill();
+                        ctx.stroke();
+                        // Label
+                        ctx.fillStyle = '#222';
+                        ctx.font = `${13 * scale}px sans-serif`;
+                        ctx.textAlign = 'left';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText(nt.label, x + padding + 28 * scale, boxY + 9 * scale);
+                        currentY += 28 * scale;
+                    });
+                }
+
+                // Edge Types
+                if (edgeCount > 0) {
+                    ctx.font = `${13 * scale}px sans-serif`;
+                    ctx.fillStyle = '#666';
+                    ctx.textBaseline = 'top';
+                    ctx.fillText('Edge Types', x + padding, currentY);
+                    currentY += 20 * scale;
+                    edgeTypes.forEach(et => {
+                        // Color line
+                        const lineY = currentY + 9 * scale;
+                        ctx.strokeStyle = et.color;
+                        ctx.lineWidth = 6 * scale;
+                        ctx.beginPath();
+                        ctx.moveTo(x + padding, lineY);
+                        ctx.lineTo(x + padding + 18 * scale, lineY);
+                        ctx.stroke();
+                        // Label
+                        ctx.fillStyle = '#222';
+                        ctx.font = `${13 * scale}px sans-serif`;
+                        ctx.textAlign = 'left';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText(et.label, x + padding + 28 * scale, lineY);
+                        currentY += 24 * scale;
+                    });
+                }
+
+                // Anchor Nodes
+                ctx.font = `${13 * scale}px sans-serif`;
+                ctx.fillStyle = '#666';
+                ctx.textBaseline = 'top';
+                ctx.fillText('Special Nodes', x + padding, currentY);
+                currentY += 20 * scale;
+                // Red square for anchor
+                const anchorBoxY = currentY;
+                ctx.fillStyle = 'rgba(239, 68, 68, 0.8)';
+                ctx.strokeStyle = '#bbb';
+                ctx.lineWidth = 1 * scale;
+                ctx.beginPath();
+                ctx.rect(x + padding, anchorBoxY, 18 * scale, 18 * scale);
+                ctx.fill();
+                ctx.stroke();
+                // Label
+                ctx.fillStyle = '#222';
+                ctx.font = `${13 * scale}px sans-serif`;
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('Anchor Nodes', x + padding + 28 * scale, anchorBoxY + 9 * scale);
+
+                ctx.restore();
+            }
+        }
