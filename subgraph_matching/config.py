@@ -41,16 +41,18 @@ def parse_encoder(parser, arg_str=None):
     enc_parser.add_argument('--n_workers', type=int)
     enc_parser.add_argument('--tag', type=str,
         help='tag to identify the run')
+    enc_parser.add_argument("--graph_pkl_path", type=str, default=None,
+                    help="Path to the .pkl file containing the graph to be used for training")
 
     enc_parser.set_defaults(conv_type='SAGE',
                         method_type='order',
                         dataset='syn',
                         n_layers=8,
-                        batch_size=64,
+                        batch_size=16,
                         hidden_dim=64,
                         skip="learnable",
                         dropout=0.0,
-                        n_batches=1000000,
+                        n_batches=10000,
                         opt='adam',   # opt_enc_parser
                         opt_scheduler='none',
                         opt_restart=100,
@@ -62,7 +64,7 @@ def parse_encoder(parser, arg_str=None):
                         n_workers=4,
                         model_path="ckpt/model.pt",
                         tag='',
-                        val_size=4096,
+                        val_size=128,
                         node_anchored=True)
 
     #return enc_parser.parse_args(arg_str)

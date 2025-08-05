@@ -4,26 +4,21 @@ import random
 
 from deepsnap.graph import Graph as DSGraph
 from deepsnap.batch import Batch
-from deepsnap.dataset import GraphDataset, Generator
+from deepsnap.batch import Batch as DSBatch
+from deepsnap.dataset import GraphDataset
 import networkx as nx
 import numpy as np
-from sklearn.manifold import TSNE
 import torch
-import torch.multiprocessing as mp
-import torch.nn.functional as F
-import torch.optim as optim
-from torch_geometric.data import DataLoader
 from torch.utils.data import DataLoader as TorchDataLoader
 from torch_geometric.datasets import TUDataset, PPI, QM9
 import torch_geometric.utils as pyg_utils
-import torch_geometric.nn as pyg_nn
 from tqdm import tqdm
-import queue
 import scipy.stats as stats
-
 from common import combined_syn
 from common import feature_preprocess
 from common import utils
+
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
 
 def load_dataset(name):
     """ Load real-world datasets, available in PyTorch Geometric.
@@ -69,10 +64,207 @@ def load_dataset(name):
                 test.append(graph)
     return train, test, task
 
+
+def sample_subgraph(g_obj, anchors=None, radius=2, hard_neg_idxs=None):
+    """
+    Sample a subgraph around an anchor node from a graph wrapped in DSGraph.
+
+    Args:
+        g_obj (DSGraph): Graph object containing a NetworkX graph (G).
+        anchors (list[int], optional): List of anchor nodes per graph index.
+        radius (int): Number of hops from the anchor node to include.
+        hard_neg_idxs (set, optional): Set of graph indices to apply hard negative logic.
+
+    Returns:
+        Tuple[DSGraph, DSGraph]: (Original graph, sampled subgraph)
+    """
+    G = g_obj.G  # NetworkX graph inside DSGraph
+    idx = G.graph.get("idx", 0)  # Unique index for the graph
+
+    # Hard negative logic: return entire graph
+    if hard_neg_idxs is not None and idx in hard_neg_idxs:
+        subgraph = G.copy()
+    else:
+        # Choose anchor node
+        if anchors is not None:
+            anchor = anchors[idx]
+        else:
+            anchor = random.choice(list(G.nodes))
+
+        # k-hop neighborhood around anchor
+        nodes = nx.single_source_shortest_path_length(G, anchor, cutoff=radius).keys()
+        subgraph = G.subgraph(nodes).copy()
+
+    # Ensure node_feature exists for all nodes
+    for v in subgraph.nodes:
+        if "node_feature" not in subgraph.nodes[v]:
+            subgraph.nodes[v]["node_feature"] = torch.ones(1)
+
+    return g_obj, DSGraph(subgraph)
+
 class DataSource:
     def gen_batch(batch_target, batch_neg_target, batch_neg_query, train):
         raise NotImplementedError
+class CustomGraphDataset:
+    def __init__(self, graph_pkl_path, node_anchored=False, num_queries=32, subgraph_hops=1, min_size=5, max_size=29):
+        self.graph_pkl_path = graph_pkl_path
+        self.node_anchored = node_anchored
+        self.num_queries = num_queries
+        self.subgraph_hops = subgraph_hops
+        self.min_size = min_size
+        self.max_size = max_size
+        self.query_size = 5
 
+        if isinstance(graph_pkl_path, nx.Graph):
+            self.full_graph = DSGraph(graph_pkl_path)
+            self.graph = self.full_graph.G
+        else:
+            self.raw_data = self._load_graph()
+            self.full_graph = self._build_graph()
+            self.graph = self.full_graph.G
+
+    def _load_graph(self):
+        with open(self.graph_pkl_path, 'rb') as f:
+            return pickle.load(f)
+
+    def _build_graph(self):
+        G = nx.Graph()
+        G.add_nodes_from(self.raw_data['nodes'])
+
+        cleaned_edges = []
+        for edge in self.raw_data['edges']:
+            if len(edge) == 3:
+                u, v, attr = edge
+                cleaned_attr = {k: v for k, v in attr.items() if isinstance(v, (int, float))}
+                cleaned_edges.append((u, v, cleaned_attr))
+            else:
+                cleaned_edges.append(edge)
+        G.add_edges_from(cleaned_edges)
+
+        for node in G.nodes():
+            if 'node_feature' not in G.nodes[node]:
+                G.nodes[node]['node_feature'] = torch.tensor([1.0], dtype=torch.float)
+
+        return DSGraph(G)
+
+    def _bfs_sample_subgraph(self, graph, size, max_tries=10):
+        """
+        Sample a connected subgraph of given size using BFS .
+        """
+        for _ in range(max_tries):
+            start_node = random.choice(list(graph.nodes))
+            visited = {start_node}
+            queue = [start_node]
+            while queue and len(visited) < size:
+                current = queue.pop(0)
+                neighbors = list(set(graph.neighbors(current)) - visited)
+                random.shuffle(neighbors)
+                for neighbor in neighbors:
+                    if len(visited) >= size:
+                        break
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+            subg = graph.subgraph(visited).copy()
+           
+            if subg.number_of_edges() > 0 and nx.is_connected(subg):
+                return subg
+        # fallback: largest connected component
+        if subg.number_of_edges() == 0 and subg.number_of_nodes() > 1:
+            components = list(nx.connected_components(subg))
+            if components:
+                largest_cc = max(components, key=len)
+                subg = subg.subgraph(largest_cc).copy()
+        return subg
+
+    def _add_anchor(self, g, anchor=None):
+        if anchor is None:
+            anchor = random.choice(list(g.nodes))
+        for v in g.nodes:
+            g.nodes[v]["node_feature"] = (torch.ones(1) if anchor == v else torch.zeros(1))
+        return g
+
+    def gen_batch(self, batch_size, *args, train=True, **kwargs):
+
+        """
+        Generate a batch of positive and negative graph pairs
+        Returns:
+            pos_a: Batch of anchor graphs (DSGraph Batch)
+            pos_b: Batch of positive graphs (DSGraph Batch)
+            neg_a: Batch of negative anchor graphs (DSGraph Batch)
+            neg_b: Batch of negative graphs (DSGraph Batch)
+        """
+        pos_a, pos_b, neg_a, neg_b = [], [], [], []
+        tries = 0
+        max_tries = 20  # Prevent infinite loops
+        
+        # Generate positive pairs (nested subgraphs from same graph)
+        while len(pos_a) < batch_size // 2 and tries < max_tries:
+            size_a = random.randint(self.min_size + 1, self.max_size)
+            size_b = random.randint(self.min_size, size_a - 1)
+            
+            # Sample subgraphs
+            sub_a = self._bfs_sample_subgraph(self.graph, size_a)
+            sub_b = self._bfs_sample_subgraph(sub_a, size_b)
+            
+            # Validate subgraphs
+            if sub_a.number_of_edges() > 0 and sub_b.number_of_edges() > 0:
+                # Handle node anchoring if needed
+                if self.node_anchored:
+                    anchor = random.choice(list(sub_a.nodes))
+                    sub_a = self._add_anchor(sub_a, anchor)
+                    sub_b = self._add_anchor(sub_b, anchor if anchor in sub_b.nodes else None)
+                
+                # Convert to DSGraph before adding to batch
+                pos_a.append(DSGraph(sub_a))
+                pos_b.append(DSGraph(sub_b))
+            tries += 1
+        
+        tries = 0
+        # Generate negative pairs (subgraphs from different parts of graph)
+        while len(neg_a) < batch_size // 2 and tries < max_tries:
+            size_a = random.randint(self.min_size, self.max_size)
+            size_b = random.randint(self.min_size, self.max_size)
+            
+            # Sample independent subgraphs
+            sub_a = self._bfs_sample_subgraph(self.graph, size_a)
+            sub_b = self._bfs_sample_subgraph(self.graph, size_b)
+            
+            # Validate and ensure they're different
+            if (sub_a.number_of_edges() > 0 and 
+                sub_b.number_of_edges() > 0 and 
+                not nx.is_isomorphic(sub_a, sub_b)):
+                
+                if self.node_anchored:
+                    sub_a = self._add_anchor(sub_a)
+                    sub_b = self._add_anchor(sub_b)
+                
+                neg_a.append(DSGraph(sub_a))
+                neg_b.append(DSGraph(sub_b))
+            tries += 1
+        
+        # Verify we got enough samples
+        if not (pos_a and pos_b and neg_a and neg_b):
+            raise RuntimeError(
+                f"Failed to generate valid batch after {max_tries} tries. "
+                f"Got {len(pos_a)}/{batch_size//2} positive and "
+                f"{len(neg_a)}/{batch_size//2} negative pairs."
+            )
+        
+        # Convert to DeepSNAP batches
+        def _make_batch(graph_list):
+            return Batch.from_data_list(graph_list)
+        
+        return _make_batch(pos_a), _make_batch(pos_b), _make_batch(neg_a), _make_batch(neg_b)
+    def gen_data_loaders(self, size, batch_size, train=True, use_distributed_sampling=False):
+        """
+        Returns three loaders (lists of batch sizes) for compatibility with the training loop.
+        This matches the interface of DiskDataSource and OTFSynDataSource.
+        """
+        num_batches = size // batch_size
+        # Each loader is a list of batch sizes, as expected by the training loop.
+        loaders = [[batch_size] * num_batches for _ in range(3)]
+        return loaders    
+    
 class OTFSynDataSource(DataSource):
     """ On-the-fly generated synthetic data for training the subgraph model.
 
@@ -425,6 +617,7 @@ class DiskImbalancedDataSource(OTFSynDataSource):
         neg_b = utils.batch_nx_graphs(neg_b)
         self.batch_idx += 1
         return pos_a, pos_b, neg_a, neg_b
+    
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt

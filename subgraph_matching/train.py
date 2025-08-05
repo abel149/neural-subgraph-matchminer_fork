@@ -62,6 +62,14 @@ def make_data_source(args):
                 node_anchored=args.node_anchored)
         else:
             raise Exception("Error: unrecognized dataset")
+    elif toks[0] == "graph":
+        data_source = data.CustomGraphDataset(
+            graph_pkl_path=args.graph_pkl_path,
+            node_anchored=args.node_anchored,
+            num_queries=args.num_queries if hasattr(args, "num_queries") else 32,
+            subgraph_hops=args.subgraph_hops if hasattr(args, "subgraph_hops") else 1,
+           
+        )
     else:
         if len(toks) == 1 or toks[1] == "balanced":
             data_source = data.DiskDataSource(toks[0],
@@ -73,7 +81,7 @@ def make_data_source(args):
             raise Exception("Error: unrecognized dataset")
     return data_source
 
-def train(args, model, logger, in_queue, out_queue):
+def train(args, model,in_queue, out_queue):
     """Train the order embedding model.
 
     args: Commandline arguments
@@ -84,10 +92,10 @@ def train(args, model, logger, in_queue, out_queue):
     scheduler, opt = utils.build_optimizer(args, model.parameters())
     if args.method_type == "order":
         clf_opt = optim.Adam(model.clf_model.parameters(), lr=args.lr)
-
+    data_source = make_data_source(args)
     done = False
     while not done:
-        data_source = make_data_source(args)
+        
         loaders = data_source.gen_data_loaders(args.eval_interval *
             args.batch_size, args.batch_size, train=True)
         for batch_target, batch_neg_target, batch_neg_query in zip(*loaders):
@@ -171,9 +179,10 @@ def train_loop(args):
         neg_b = neg_b.to(torch.device("cpu"))
         test_pts.append((pos_a, pos_b, neg_a, neg_b))
 
+
     workers = []
     for i in range(args.n_workers):
-        worker = mp.Process(target=train, args=(args, model, data_source,
+        worker = mp.Process(target=train, args=(args, model,
             in_queue, out_queue))
         worker.start()
         workers.append(worker)
