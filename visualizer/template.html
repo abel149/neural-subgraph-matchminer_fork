@@ -3330,26 +3330,28 @@
 
             exportHighQualityPNG(scale = 1) {
                 const origCanvas = this.canvas;
-                const origCtx = origCanvas.getContext('2d');
                 const width = origCanvas.width;
                 const height = origCanvas.height;
 
-                // Create off-screen canvas
                 const exportCanvas = document.createElement('canvas');
                 exportCanvas.width = width * scale;
                 exportCanvas.height = height * scale;
                 const exportCtx = exportCanvas.getContext('2d');
 
-                // Scale everything
                 exportCtx.setTransform(scale, 0, 0, scale, 0, 0);
 
-                // Draw background pattern (copy your CSS pattern logic)
+                const oldCanvas = window.canvasNavigator.canvas;
+                const oldCtx = window.canvasNavigator.ctx;
+                window.canvasNavigator.canvas = exportCanvas;
+                window.canvasNavigator.ctx = exportCtx;
+
+                window.canvasNavigator.render();
+
+                exportCtx.globalCompositeOperation = 'destination-over';
+
                 exportCtx.fillStyle = getComputedStyle(document.body).getPropertyValue('--bg-primary') || '#fafafa';
                 exportCtx.fillRect(0, 0, width, height);
 
-                // Draw the pattern (20x20 grid of dots)
-                exportCtx.save();
-                exportCtx.globalAlpha = 1;
                 exportCtx.fillStyle = 'rgba(0,0,0,0.02)';
                 for (let x = 0; x < width; x += 20) {
                     for (let y = 0; y < height; y += 20) {
@@ -3358,23 +3360,14 @@
                         exportCtx.fill();
                     }
                 }
-                exportCtx.restore();
 
-                // Draw the graph at scale
-                const oldCanvas = window.canvasNavigator.canvas;
-                const oldCtx = window.canvasNavigator.ctx;
-                window.canvasNavigator.canvas = exportCanvas;
-                window.canvasNavigator.ctx = exportCtx;
 
-                // Render the graph (with legend)
-                window.canvasNavigator.render();
+                exportCtx.globalCompositeOperation = 'source-over';
 
-                // Draw the legend card (as in drawLegendOnCanvas)
                 if (window.exportManager && window.exportManager.drawLegendOnCanvas) {
                     window.exportManager.drawLegendOnCanvas(exportCtx, scale);
                 }
 
-                // Restore the original canvas/context
                 window.canvasNavigator.canvas = oldCanvas;
                 window.canvasNavigator.ctx = oldCtx;
 
