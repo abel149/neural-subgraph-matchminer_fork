@@ -439,7 +439,7 @@ class GreedySearchAgent(SearchAgent):
 
             elif cur_rank_method == "counts":
                 sorted_counts = sorted(self.counts[pattern_size].items(), key=lambda x: len(x[1]), reverse=True)
-                top_patterns = sorted_counts[:3]  # strictly top 3
+                top_patterns = sorted_counts[:3]  
                 for _, neighs in top_patterns:
                     cand_patterns_uniq.append(random.choice(neighs))
 
