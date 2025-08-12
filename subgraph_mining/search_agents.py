@@ -406,11 +406,10 @@ class GreedySearchAgent(SearchAgent):
 
     def finish_search(self):
         """
-        Processes the aggregated results from all trials to find the most frequent patterns.
-        This method remains unchanged.
+        Processes the aggregated results from all trials to find the top 3 patterns per pattern size.
         """
         if self.analyze:
-            pass
+            pass  # Add analysis code here if needed
 
         cand_patterns_uniq = []
         for pattern_size in range(self.min_pattern_size, self.max_pattern_size + 1):
@@ -434,17 +433,19 @@ class GreedySearchAgent(SearchAgent):
                     if wl_hash not in wl_hashes:
                         wl_hashes.add(wl_hash)
                         cand_patterns_uniq_size.append(pattern)
-                        if len(cand_patterns_uniq_size) >= self.out_batch_size:
+                        if len(cand_patterns_uniq_size) >= 3:  # limit to top 3
                             break
                 cand_patterns_uniq.extend(cand_patterns_uniq_size)
-                
+
             elif cur_rank_method == "counts":
                 sorted_counts = sorted(self.counts[pattern_size].items(), key=lambda x: len(x[1]), reverse=True)
-                for _, neighs in sorted_counts[:self.out_batch_size]:
+                top_patterns = sorted_counts[:3]  # strictly top 3
+                for _, neighs in top_patterns:
                     cand_patterns_uniq.append(random.choice(neighs))
+
             else:
                 print("Unrecognized rank method")
-                
+
         return cand_patterns_uniq
 
 class MemoryEfficientGreedyAgent(GreedySearchAgent):
