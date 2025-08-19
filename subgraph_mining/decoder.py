@@ -594,19 +594,43 @@ def pattern_growth(dataset, task, args):
     count_by_size = defaultdict(int)
     warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning)
     
+    # ...existing code...
     successful_visualizations = 0
-    for pattern in out_graphs:
-        if visualize_pattern_graph_ext(pattern, args, count_by_size):
-            successful_visualizations += 1
-        count_by_size[len(pattern)] += 1
+    if isinstance(out_graphs, dict):
+        print("Visualizing top patterns:")
+        for pattern in out_graphs.get("top_patterns", []):
+            if visualize_pattern_graph_ext(pattern, args, count_by_size):
+                successful_visualizations += 1
+            count_by_size[len(pattern)] += 1
 
-    print(f"Successfully visualized {successful_visualizations}/{len(out_graphs)} patterns")
+        print("Visualizing rare patterns:")
+        for pattern in out_graphs.get("rare_patterns", []):
+            if visualize_pattern_graph_ext(pattern, args, count_by_size):
+                successful_visualizations += 1
+            count_by_size[len(pattern)] += 1
 
-    # Save results
+        total_patterns = len(out_graphs.get("top_patterns", [])) + len(out_graphs.get("rare_patterns", []))
+    else:
+        for pattern in out_graphs:
+            if visualize_pattern_graph_ext(pattern, args, count_by_size):
+                successful_visualizations += 1
+            count_by_size[len(pattern)] += 1
+        total_patterns = len(out_graphs)
+
+    print(f"Successfully visualized {successful_visualizations}/{total_patterns} patterns")
+
+    # Save results (put this after visualization)
     if not os.path.exists("results"):
         os.makedirs("results")
-    with open(args.out_path, "wb") as f:
-        pickle.dump(out_graphs, f)
+    if isinstance(out_graphs, dict):
+        with open(args.out_path.replace(".pkl", "_top.pkl"), "wb") as f:
+            pickle.dump(out_graphs.get("top_patterns", []), f)
+        with open(args.out_path.replace(".pkl", "_rare.pkl"), "wb") as f:
+            pickle.dump(out_graphs.get("rare_patterns", []), f)
+    else:
+        with open(args.out_path, "wb") as f:
+            pickle.dump(out_graphs, f)
+
     
     return out_graphs
 
