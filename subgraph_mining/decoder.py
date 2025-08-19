@@ -129,7 +129,7 @@ def pattern_growth_streaming(dataset, task, args):
 
     return all_discovered_patterns
 
-def visualize_pattern_graph(pattern, args, count_by_size):
+def visualize_pattern_graph(pattern, args, count_by_size, save_dir="plots/cluster"):
     try:
         num_nodes = len(pattern)
         num_edges = pattern.number_of_edges()
@@ -437,10 +437,10 @@ def visualize_pattern_graph(pattern, args, count_by_size):
         graph_type_short = "dir" if pattern.is_directed() else "undir"
         filename = f"{graph_type_short}_{('_'.join(pattern_info))}"
 
-        plt.savefig(f"plots/cluster/{filename}.png", bbox_inches='tight', dpi=300)
-        plt.savefig(f"plots/cluster/{filename}.pdf", bbox_inches='tight')
+        plt.savefig(os.path.join(save_dir, f"{filename}.png"), bbox_inches='tight', dpi=300)
+        plt.savefig(os.path.join(save_dir, f"{filename}.pdf"), bbox_inches='tight')
         plt.close()
-        
+            
         return True
     except Exception as e:
         print(f"Error visualizing pattern graph: {e}")
@@ -593,22 +593,28 @@ def pattern_growth(dataset, task, args):
     # Visualize discovered patterns
     count_by_size = defaultdict(int)
     warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning)
+        
+      
+    top_dir = "plots/cluster/top"
+    rare_dir = "plots/cluster/rare"
+    os.makedirs(top_dir, exist_ok=True)
+    os.makedirs(rare_dir, exist_ok=True)
     
-    # ...existing code...
     successful_visualizations = 0
+      
     if isinstance(out_graphs, dict):
         print("Visualizing top patterns:")
         for pattern in out_graphs.get("top_patterns", []):
-            if visualize_pattern_graph_ext(pattern, args, count_by_size):
+            if visualize_pattern_graph_ext(pattern, args, count_by_size, save_dir=top_dir):
                 successful_visualizations += 1
             count_by_size[len(pattern)] += 1
 
         print("Visualizing rare patterns:")
         for pattern in out_graphs.get("rare_patterns", []):
-            if visualize_pattern_graph_ext(pattern, args, count_by_size):
+            if visualize_pattern_graph_ext(pattern, args, count_by_size, save_dir=rare_dir):
                 successful_visualizations += 1
             count_by_size[len(pattern)] += 1
-
+  
         total_patterns = len(out_graphs.get("top_patterns", [])) + len(out_graphs.get("rare_patterns", []))
     else:
         for pattern in out_graphs:
