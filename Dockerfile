@@ -59,4 +59,3 @@ RUN pip install --no-cache-dir \
 # Copy the project
 COPY . .
 
-CMD ["python", "your_entry_script.py"]
