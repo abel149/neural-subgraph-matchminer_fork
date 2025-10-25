@@ -55,7 +55,7 @@ def parse_decoder(parser):
     dec_parser.add_argument('--graph_type', type=str,
         help='"directed" or "undirected" graph type')
     
-    # Set default values
+    # Set default values0
     parser.set_defaults(
         # Dataset defaults
         dataset="enzymes",
