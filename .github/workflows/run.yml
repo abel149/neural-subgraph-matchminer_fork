@@ -59,16 +59,16 @@ jobs:
           echo "Percent of processors used: ${PERCENT_USED}%"
           echo "total_cpus=$TOTAL_CPUS" >> $GITHUB_OUTPUT
           echo "percent_used=$PERCENT_USED" >> $GITHUB_OUTPUT
-      # 2️. Download Amazon dataset from GitHub Release
+      #Download Amazon dataset from GitHub Release
       - name: Fetch data.pkl from GitHub Release
         run: |
-          echo " Downloading amazon0302.pkl from GitHub Releases..."
+          echo " Downloading data.pkl from GitHub Releases..."
           wget -O data.pkl https://github.com/abel149/neural-subgraph-matchminer_fork/releases/download/v1.0/data.pkl
 
           echo " Verifying downloaded file..."
           file data.pkl
 
-          FILE_SIZE=$(stat -c%s amazon0302.pkl)
+          FILE_SIZE=$(stat -c%s data.pkl)
           echo "File size: $FILE_SIZE bytes"
 
           if [ $FILE_SIZE -lt 100000 ]; then
@@ -76,7 +76,7 @@ jobs:
             exit 1
           fi
 
-          if file amazon0302.pkl | grep -Eq "HTML|ASCII|Unicode"; then
+          if file data.pkl | grep -Eq "HTML|ASCII|Unicode"; then
             echo " ERROR: data.pkl is not a valid binary file!"
             exit 1
           fi
