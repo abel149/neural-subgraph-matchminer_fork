@@ -63,7 +63,7 @@ jobs:
       - name: Fetch data.pkl from GitHub Release
         run: |
           echo " Downloading data.pkl from GitHub Releases..."
-          wget -O data.pkl https://github.com/abel149/neural-subgraph-matchminer_fork/releases/download/v1.0/data.pkl
+          wget -O data.pkl https://github.com/abel149/neural-subgraph-matchminer_fork/releases/download/v1.1/data.pkl
 
           echo " Verifying downloaded file..."
           file data.pkl
