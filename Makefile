@@ -1,4 +1,4 @@
-DATASET=graph.pkl
+DATASET=metta.pkl
 COUNTS=results/
 
 .PHONY: all matcher miner counter analyze
@@ -12,7 +12,7 @@ miner:
 	python -m subgraph_mining.decoder --dataset=$(DATASET) --node_anchored
 
 counter:
-	python -m analyze.count_patterns --dataset=$(DATASET) --out_path=results/counts.json --node_anchored --preserve_labels
+	python -m analyze.count_patterns --dataset=$(DATASET) --out_path=results/counts.json --node_anchored --graph_type=directed
 
 analyze:
 	python -m analyze.analyze_pattern_counts --counts_path=$(COUNTS)
