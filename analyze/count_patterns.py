@@ -622,9 +622,25 @@ def main():
         query_lens = [len(q) for q in baseline_queries]
         n_matches = count_graphlets(baseline_queries, targets, args)
             
-    with open(args.out_path, "w") as f:
+    # Resolve output path: accept directory or file path
+    out_path = args.out_path
+    if not out_path or out_path.strip() == "":
+        out_path = os.path.join("results", "counts.json")
+
+    # If a directory is provided (or a trailing separator), write a default filename inside it
+    if out_path.endswith(os.sep) or (os.path.exists(out_path) and os.path.isdir(out_path)):
+        os.makedirs(out_path, exist_ok=True)
+        ds_base = os.path.splitext(os.path.basename(args.dataset))[0]
+        out_path = os.path.join(out_path, f"counts_{ds_base}.json")
+    else:
+        # Ensure parent directory exists if a full file path is given
+        out_dir = os.path.dirname(out_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+
+    with open(out_path, "w") as f:
         json.dump((query_lens, n_matches, []), f)
-    print(f"Results saved to {args.out_path}")
+    print(f"Results saved to {out_path}")
 
 
 
