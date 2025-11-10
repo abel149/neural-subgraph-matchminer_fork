@@ -340,9 +340,10 @@ def count_graphlets(queries, targets, args):
 
     # Preprocess: remove self-loops once; ensure copy-free matching later
     def _clean(g):
-        if g.selfloop_edges():
+        # NetworkX compatibility: use function form for selfloop_edges
+        if any(True for _ in nx.selfloop_edges(g)):
             h = g.copy()
-            h.remove_edges_from(nx.selfloop_edges(h))
+            h.remove_edges_from(list(nx.selfloop_edges(h)))
             return h
         return g
 
