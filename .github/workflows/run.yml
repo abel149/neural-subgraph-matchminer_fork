@@ -115,7 +115,7 @@ jobs:
                 --dataset=test_target_directed_small_portable.pkl \
                 --queries_path=results/patterns.pkl \
                 --out_path=results/ \
-                --node_anchored 
+                --graph_type directed
               echo 'Counting completed.'
               ls -la /app/results
             "
