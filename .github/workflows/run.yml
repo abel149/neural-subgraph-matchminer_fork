@@ -92,7 +92,7 @@ jobs:
               set -e
               echo 'Starting decoder run...'
               python -m subgraph_mining.decoder \
-                --dataset=test_target_medium.pkl \
+                --dataset=test_target_directed_medium.pkl \
                 --n_trials=200 \
                 --node_anchored \
                 --out_path=/app/results/patterns.pkl \
@@ -112,7 +112,7 @@ jobs:
               export PYTHONPATH=/app
               echo 'Running pattern counter...'
               python -m analyze.count_patterns \
-                --dataset=test_target_medium.pkl \
+                --dataset=test_target_directed_medium.pkl \
                 --queries_path=results/patterns.pkl \
                 --out_path=results/ \
                 --node_anchored 
