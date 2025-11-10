@@ -115,7 +115,7 @@ jobs:
                 --dataset=test_target_medium.pkl \
                 --queries_path=results/patterns.pkl \
                 --out_path=results/ \
-                --node_anchored \
+                --node_anchored 
               echo 'Counting completed.'
               ls -la /app/results
             "
