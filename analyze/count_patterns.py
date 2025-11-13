@@ -42,79 +42,33 @@ import pickle
 import torch.multiprocessing as mp
 from sklearn.decomposition import PCA
 from itertools import combinations
-from collections import Counter
 
-_GLOBAL_QUERIES = None
-_GLOBAL_TARGETS = None
-_GLOBAL_QUERY_STATS = None
-_GLOBAL_TARGET_STATS = None
-_GLOBAL_QUERY_ANCHOR_SIGS = None  # per-query anchor signature
-_GLOBAL_TARGET_SIGS = None        # per-target cached node signatures (list of dicts)
-
-MAX_SEARCH_TIME = 600  
+MAX_SEARCH_TIME = 1800  
 MAX_MATCHES_PER_QUERY = 10000
 DEFAULT_SAMPLE_ANCHORS = 1000
 CHECKPOINT_INTERVAL = 100  
 
+# Global caches (set in worker initializer)
+_GLOBAL_QUERIES = None
+_GLOBAL_TARGETS = None
+_GLOBAL_QUERY_STATS = None
+_GLOBAL_TARGET_STATS = None
+_GLOBAL_QUERY_ANCHOR_SIGS = None
+_GLOBAL_TARGET_SIGS = None
+
 def _init_worker(queries, targets, query_stats, target_stats):
-    """Pool initializer: set module-level globals in each worker."""
-    global _GLOBAL_QUERIES, _GLOBAL_TARGETS, _GLOBAL_QUERY_STATS, _GLOBAL_TARGET_STATS, _GLOBAL_QUERY_ANCHOR_SIGS, _GLOBAL_TARGET_SIGS
+    """Pool initializer: set module-level globals in each worker and build signatures."""
+    global _GLOBAL_QUERIES, _GLOBAL_TARGETS, _GLOBAL_QUERY_STATS, _GLOBAL_TARGET_STATS
+    global _GLOBAL_QUERY_ANCHOR_SIGS, _GLOBAL_TARGET_SIGS
     _GLOBAL_QUERIES = queries
     _GLOBAL_TARGETS = targets
     _GLOBAL_QUERY_STATS = query_stats
     _GLOBAL_TARGET_STATS = target_stats
 
-    # Build per-query anchor signatures once in each worker
-    _GLOBAL_QUERY_ANCHOR_SIGS = []
-    for q in queries:
-        _GLOBAL_QUERY_ANCHOR_SIGS.append(compute_anchor_signature(q))
-
-    # Build per-target node signatures once in each worker
-    _GLOBAL_TARGET_SIGS = []
-    for t in targets:
-        _GLOBAL_TARGET_SIGS.append(compute_target_signatures(t))
-
-def get_node_label(g, n):
-    return g.nodes[n].get('label') if 'label' in g.nodes[n] else None
-
-def choose_query_root(q, strategy="rare_label_high_degree"):
-    labels = [get_node_label(q, n) for n in q.nodes]
-    freq = Counter(labels)
-    if strategy == "rare_label_high_degree":
-        # Prefer rare labels, then higher degree
-        def key(n):
-            lbl = get_node_label(q, n)
-            return (freq.get(lbl, 0), -q.degree[n])
-        return min(q.nodes, key=key)
-    elif strategy == "high_degree":
-        return max(q.nodes, key=lambda n: q.degree[n])
-    else:
-        # default fallback
-        return next(iter(q.nodes))
-
-def select_anchor_candidates(q, t, sample_anchors, degree_tol=0.2, use_label=True, strategy="rare_label_high_degree"):
-    root = choose_query_root(q, strategy=strategy)
-    q_lbl = get_node_label(q, root)
-    q_deg = q.degree[root]
-
-    # Build candidate set by filters
-    candidates = []
-    for n in t.nodes:
-        if use_label:
-            t_lbl = get_node_label(t, n)
-            if t_lbl != q_lbl:
-                continue
-        if q_deg > 0:
-            low = max(0, int((1 - degree_tol) * q_deg))
-            high = int((1 + degree_tol) * q_deg) + 1
-            t_deg = t.degree[n]
-            if not (low <= t_deg <= high):
-                continue
-        candidates.append(n)
-
-    if len(candidates) <= sample_anchors:
-        return candidates
-    return random.sample(candidates, sample_anchors)
+    # Per-query anchor signatures
+    _GLOBAL_QUERY_ANCHOR_SIGS = [compute_anchor_signature(q) for q in queries]
+    # Per-target per-node signatures
+    _GLOBAL_TARGET_SIGS = [compute_target_signatures(t) for t in targets]
 
 def get_node_attr(g, n, keys):
     for k in keys:
@@ -123,14 +77,11 @@ def get_node_attr(g, n, keys):
     return None
 
 def compute_anchor_signature(q):
-    """Return a simple anchor signature for query q.
-    Chooses the node with anchor=1 if present; otherwise any node.
-    Signature fields: anchor id, degree, label/role, neighbor label multiset.
-    """
+    """Return signature for query's anchored node (or arbitrary node if missing anchor)."""
     anchor = None
-    for n in q.nodes:
-        if q.nodes[n].get('anchor', 0) == 1:
-            anchor = n
+    for u in q.nodes:
+        if q.nodes[u].get('anchor', 0) == 1:
+            anchor = u
             break
     if anchor is None:
         anchor = next(iter(q.nodes))
@@ -165,6 +116,26 @@ def compute_target_signatures(t):
             'neigh_multiset': Counter(neigh_labels)
         }
     return sigs
+
+def fast_anchor_feasible(q_sig, t_sig, degree_tol=0.2, use_label=False):
+    """Cheap necessary checks for anchor mapping feasibility.
+    Returns False only when impossible; True means "maybe" (run matcher).
+    """
+    if use_label:
+        if q_sig['label'] is not None and t_sig['label'] is not None and q_sig['label'] != t_sig['label']:
+            return False
+    if q_sig['degree'] > 0:
+        low = max(0, int((1 - degree_tol) * q_sig['degree']))
+        high = int((1 + degree_tol) * q_sig['degree']) + 1
+        if not (low <= t_sig['degree'] <= high):
+            return False
+    # neighbor label containment
+    for k, v in q_sig['neigh_multiset'].items():
+        if k is None:
+            continue
+        if t_sig['neigh_multiset'].get(k, 0) < v:
+            return False
+    return True
 
 def compute_graph_stats(G):
     """Compute graph statistics for filtering."""
@@ -235,10 +206,6 @@ def arg_parse():
     parser.add_argument('--use_sampling', action="store_true", help='Use node sampling for very large graphs')
     parser.add_argument('--graph_type', type=str, default='auto', choices=['directed', 'undirected', 'auto'],
                        help='Graph type: directed, undirected, or auto-detect')
-    parser.add_argument('--anchor_degree_tolerance', type=float, default=0.2, help='Degree tolerance for selecting anchor candidates')
-    parser.add_argument('--anchor_use_label', action='store_true', help='Match anchor candidates by node label')
-    parser.add_argument('--anchor_strategy', type=str, default='rare_label_high_degree', choices=['rare_label_high_degree','high_degree','first'], help='How to select the query root for anchoring')
-
     parser.set_defaults(dataset="enzymes",
                        queries_path="results/out-patterns.p",
                        out_path="results/counts.json",
@@ -291,7 +258,7 @@ def load_networkx_graph(filepath, directed=None):
         return graph
 
 def count_graphlets_helper(inp):
-    """Worker using global caches; input is (q_idx, t_idx, method, node_anchored, anchor_or_none, timeout)."""
+    """Worker: input is (q_idx, t_idx, method, node_anchored, anchor_or_none, timeout)."""
     q_idx, t_idx, method, node_anchored, anchor_or_none, timeout = inp
     query = _GLOBAL_QUERIES[q_idx]
     target = _GLOBAL_TARGETS[t_idx]
@@ -299,19 +266,17 @@ def count_graphlets_helper(inp):
     t_stats = _GLOBAL_TARGET_STATS[t_idx]
 
     start_time = time.time()
+    deadline = start_time + min(timeout, 600)
 
-    # Fast prefilter (graph-level)
+    # Graph-level fast check
     if not can_be_isomorphic(q_stats, t_stats):
         return q_idx, 0
 
     count = 0
     try:
-        # Windows-safe cooperative timeout
-        deadline = start_time + min(timeout, 600)
-
+        # Symmetry estimate only if needed
         if method == "freq":
-            # approximate symmetry by self-isomorphisms
-            ismags = nx.isomorphism.DiGraphMatcher(query, query) if query.is_directed() else nx.isomorphism.ISMAGS(query, query)
+            ismags = nx.is_directed(query) and nx.isomorphism.DiGraphMatcher(query, query) or nx.isomorphism.ISMAGS(query, query)
             n_symmetries = 0
             for _ in ismags.isomorphisms_iter(symmetry=False):
                 n_symmetries += 1
@@ -320,24 +285,33 @@ def count_graphlets_helper(inp):
             n_symmetries = max(1, n_symmetries)
 
         if node_anchored:
-            prev_anchor_vals = {}
+            # Cheap feasibility precheck (never changes counts)
+            q_sig = _GLOBAL_QUERY_ANCHOR_SIGS[q_idx]
+            t_sig = _GLOBAL_TARGET_SIGS[t_idx].get(anchor_or_none)
+            if t_sig is None:
+                return q_idx, 0
+            # auto-use label/role info only if present on both graphs
+            use_label = any('label' in d or 'role' in d for _, d in target.nodes(data=True)) and \
+                        any('label' in d or 'role' in d for _, d in query.nodes(data=True))
+            if not fast_anchor_feasible(q_sig, t_sig, degree_tol=0.2, use_label=use_label):
+                return q_idx, 0
+
+            # Preserve and set anchor attributes
+            prev = {}
+            for n in target.nodes:
+                if 'anchor' in target.nodes[n]:
+                    prev[n] = target.nodes[n]['anchor']
+            nx.set_node_attributes(target, 0, name='anchor')
+            if anchor_or_none in target:
+                target.nodes[anchor_or_none]['anchor'] = 1
+
             try:
-                for n in target.nodes:
-                    if 'anchor' in target.nodes[n]:
-                        prev_anchor_vals[n] = target.nodes[n]['anchor']
-                nx.set_node_attributes(target, 0, name="anchor")
-                if anchor_or_none in target:
-                    target.nodes[anchor_or_none]["anchor"] = 1
-                # Label-aware matching along with anchor attribute if labels exist
-                # Defaults ensure robustness when labels are missing
-                if any('label' in target.nodes[n] for n in target.nodes) and any('label' in query.nodes[n] for n in query.nodes):
-                    node_match = iso.categorical_node_match(["anchor", "label"], [0, None])
-                else:
-                    node_match = iso.categorical_node_match(["anchor"], [0])
-                matcher = iso.DiGraphMatcher(target, query, node_match=node_match) if target.is_directed() else iso.GraphMatcher(target, query, node_match=node_match)
+                node_match = iso.categorical_node_match(['anchor'], [0])
+                matcher = target.is_directed() and iso.DiGraphMatcher(target, query, node_match=node_match) \
+                          or iso.GraphMatcher(target, query, node_match=node_match)
                 if time.time() > deadline:
                     return q_idx, 0
-                if method == "bin":
+                if method == 'bin':
                     count = int(matcher.subgraph_is_isomorphic())
                 else:
                     c = 0
@@ -348,15 +322,15 @@ def count_graphlets_helper(inp):
                     count = c / n_symmetries if n_symmetries else c
             finally:
                 for n in target.nodes:
-                    if n in prev_anchor_vals:
-                        target.nodes[n]['anchor'] = prev_anchor_vals[n]
+                    if n in prev:
+                        target.nodes[n]['anchor'] = prev[n]
                     elif 'anchor' in target.nodes[n]:
                         del target.nodes[n]['anchor']
         else:
-            matcher = iso.DiGraphMatcher(target, query) if target.is_directed() else iso.GraphMatcher(target, query)
+            matcher = target.is_directed() and iso.DiGraphMatcher(target, query) or iso.GraphMatcher(target, query)
             if time.time() > deadline:
                 return q_idx, 0
-            if method == "bin":
+            if method == 'bin':
                 count = int(matcher.subgraph_is_isomorphic())
             else:
                 c = 0
@@ -370,9 +344,9 @@ def count_graphlets_helper(inp):
         print(f"Error processing query {q_idx} vs target {t_idx}: {str(e)}")
         count = 0
 
-    processing_time = time.time() - start_time
-    if processing_time > 10:
-        print(f"Task (q={q_idx}, t={t_idx}) processed in {processing_time:.2f}s with count {count}")
+    took = time.time() - start_time
+    if took > 10:
+        print(f"Task (q={q_idx}, t={t_idx}) processed in {took:.2f}s with count {count}")
 
     return q_idx, count
 
@@ -381,54 +355,15 @@ def save_checkpoint(n_matches, checkpoint_file):
         json.dump({str(k): v for k, v in n_matches.items()}, f)
     print(f"Checkpoint saved to {checkpoint_file}")
 
-def load_checkpoint(checkpoint_file):
-    if os.path.exists(checkpoint_file):
-        with open(checkpoint_file, 'r') as f:
-            try:
-                checkpoint = json.load(f)
-                return defaultdict(float, {int(k): v for k, v in checkpoint.items()})
-            except json.JSONDecodeError:
-                print(f"Error loading checkpoint file {checkpoint_file}, starting fresh")
-    return defaultdict(float)
-
-def sample_subgraphs(target, n_samples=10, max_size=1000):
-    subgraphs = []
-    nodes = list(target.nodes())
-    
-    for _ in range(n_samples):
-        start_node = random.choice(nodes)
-        subgraph_nodes = {start_node}
-        
-        if target.is_directed():
-            frontier = list(set(target.successors(start_node)) | set(target.predecessors(start_node)))
-        else:
-            frontier = list(target.neighbors(start_node))
-        
-        while len(subgraph_nodes) < max_size and frontier:
-            next_node = frontier.pop(0)
-            if next_node not in subgraph_nodes:
-                subgraph_nodes.add(next_node)
-                if target.is_directed():
-                    new_neighbors = set(target.successors(next_node)) | set(target.predecessors(next_node))
-                else:
-                    new_neighbors = set(target.neighbors(next_node))
-                frontier.extend([n for n in new_neighbors 
-                              if n not in subgraph_nodes and n not in frontier])
-        
-        sg = target.subgraph(subgraph_nodes)
-        subgraphs.append(sg)
-        
-    return subgraphs
-
 def count_graphlets(queries, targets, args):
     print(f"Processing {len(queries)} queries across {len(targets)} targets")
-
+    
     is_directed = any(g.is_directed() for g in queries + targets)
     if is_directed:
         print("Detected directed graphs - using DiGraphMatcher")
-
+    
     n_matches = load_checkpoint(args.checkpoint_file)
-
+    
     problematic_tasks_file = "problematic_tasks.json"
     if os.path.exists(problematic_tasks_file):
         with open(problematic_tasks_file, 'r') as f:
@@ -439,8 +374,7 @@ def count_graphlets(queries, targets, args):
                 problematic_tasks = set()
     else:
         problematic_tasks = set()
-
-    # Optional sampling for huge graphs
+    
     if args.use_sampling and any(t.number_of_nodes() > 100000 for t in targets):
         sampled_targets = []
         for target in targets:
@@ -451,10 +385,9 @@ def count_graphlets(queries, targets, args):
                 sampled_targets.append(target)
         targets = sampled_targets
         print(f"After sampling: {len(targets)} target graphs to process")
-
-    # Preprocess: remove self-loops once; ensure copy-free matching later
+    
+    # Clean graphs once (remove self-loops) to avoid per-task copies
     def _clean(g):
-        # NetworkX compatibility: use function form for selfloop_edges
         if any(True for _ in nx.selfloop_edges(g)):
             h = g.copy()
             h.remove_edges_from(list(nx.selfloop_edges(h)))
@@ -464,7 +397,7 @@ def count_graphlets(queries, targets, args):
     queries = [_clean(q) for q in queries]
     targets = [_clean(t) for t in targets]
 
-    # Compute light stats once
+    # Precompute lightweight stats once
     query_stats = [compute_graph_stats(q) for q in queries]
     target_stats = [compute_graph_stats(t) for t in targets]
 
@@ -479,28 +412,21 @@ def count_graphlets(queries, targets, args):
             t_stats = target_stats[ti]
             if not can_be_isomorphic(q_stats, t_stats):
                 continue
-            task_base_id = f"{qi}_{ti}"
-            if task_base_id in problematic_tasks:
-                print(f"Skipping known problematic task {task_base_id}")
+            task_id = f"{qi}_{ti}"
+            if task_id in problematic_tasks:
+                print(f"Skipping known problematic task {task_id}")
                 continue
-            if task_base_id in n_matches:
-                print(f"Skipping already processed task {task_base_id}")
+            if task_id in n_matches:
+                print(f"Skipping already processed task {task_id}")
                 continue
             if args.node_anchored:
-                # Smart candidate selection: match label and degree of a canonical query node
-                anchors = select_anchor_candidates(
-                    q, t,
-                    sample_anchors=args.sample_anchors,
-                    degree_tol=args.anchor_degree_tolerance,
-                    use_label=args.anchor_use_label,
-                    strategy=args.anchor_strategy,
-                )
-                if not anchors:
-                    # Fallback to a tiny random sample to avoid missing rare cases
-                    nodes = list(t.nodes)
-                    anchors = random.sample(nodes, min(10, len(nodes))) if nodes else []
-                for anchor in anchors:
-                    inp.append((qi, ti, args.count_method, args.node_anchored, anchor, args.timeout))
+                nodes = list(t.nodes)
+                if len(nodes) > args.sample_anchors:
+                    anchors = random.sample(nodes, args.sample_anchors)
+                else:
+                    anchors = nodes
+                for a in anchors:
+                    inp.append((qi, ti, args.count_method, args.node_anchored, a, args.timeout))
             else:
                 inp.append((qi, ti, args.count_method, args.node_anchored, None, args.timeout))
 
@@ -517,7 +443,6 @@ def count_graphlets(queries, targets, args):
             print(f"Processing batch {batch_start}-{batch_end} out of {len(inp)}")
             batch_start_time = time.time()
 
-            # Tuned chunksize for lower overhead
             chunksz = max(1, len(batch)//(args.n_workers*4) or 1)
             results = pool.imap_unordered(count_graphlets_helper, batch, chunksize=chunksz)
 
@@ -762,8 +687,6 @@ def main():
     with open(out_path, "w") as f:
         json.dump((query_lens, n_matches, []), f)
     print(f"Results saved to {out_path}")
-
-
 
 if __name__ == "__main__":
     main()
