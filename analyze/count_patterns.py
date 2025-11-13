@@ -48,6 +48,8 @@ _GLOBAL_QUERIES = None
 _GLOBAL_TARGETS = None
 _GLOBAL_QUERY_STATS = None
 _GLOBAL_TARGET_STATS = None
+_GLOBAL_QUERY_ANCHOR_SIGS = None  # per-query anchor signature
+_GLOBAL_TARGET_SIGS = None        # per-target cached node signatures (list of dicts)
 
 MAX_SEARCH_TIME = 600  
 MAX_MATCHES_PER_QUERY = 10000
@@ -56,11 +58,21 @@ CHECKPOINT_INTERVAL = 100
 
 def _init_worker(queries, targets, query_stats, target_stats):
     """Pool initializer: set module-level globals in each worker."""
-    global _GLOBAL_QUERIES, _GLOBAL_TARGETS, _GLOBAL_QUERY_STATS, _GLOBAL_TARGET_STATS
+    global _GLOBAL_QUERIES, _GLOBAL_TARGETS, _GLOBAL_QUERY_STATS, _GLOBAL_TARGET_STATS, _GLOBAL_QUERY_ANCHOR_SIGS, _GLOBAL_TARGET_SIGS
     _GLOBAL_QUERIES = queries
     _GLOBAL_TARGETS = targets
     _GLOBAL_QUERY_STATS = query_stats
     _GLOBAL_TARGET_STATS = target_stats
+
+    # Build per-query anchor signatures once in each worker
+    _GLOBAL_QUERY_ANCHOR_SIGS = []
+    for q in queries:
+        _GLOBAL_QUERY_ANCHOR_SIGS.append(compute_anchor_signature(q))
+
+    # Build per-target node signatures once in each worker
+    _GLOBAL_TARGET_SIGS = []
+    for t in targets:
+        _GLOBAL_TARGET_SIGS.append(compute_target_signatures(t))
 
 def get_node_label(g, n):
     return g.nodes[n].get('label') if 'label' in g.nodes[n] else None
@@ -238,7 +250,7 @@ def count_graphlets_helper(inp):
 
     start_time = time.time()
 
-    # Fast prefilter
+    # Fast prefilter (graph-level)
     if not can_be_isomorphic(q_stats, t_stats):
         return q_idx, 0
 
