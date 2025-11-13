@@ -42,13 +42,14 @@ import pickle
 import torch.multiprocessing as mp
 from sklearn.decomposition import PCA
 from itertools import combinations
+from collections import Counter
 
 _GLOBAL_QUERIES = None
 _GLOBAL_TARGETS = None
 _GLOBAL_QUERY_STATS = None
 _GLOBAL_TARGET_STATS = None
 
-MAX_SEARCH_TIME = 1800  
+MAX_SEARCH_TIME = 600  
 MAX_MATCHES_PER_QUERY = 10000
 DEFAULT_SAMPLE_ANCHORS = 1000
 CHECKPOINT_INTERVAL = 100  
@@ -60,6 +61,48 @@ def _init_worker(queries, targets, query_stats, target_stats):
     _GLOBAL_TARGETS = targets
     _GLOBAL_QUERY_STATS = query_stats
     _GLOBAL_TARGET_STATS = target_stats
+
+def get_node_label(g, n):
+    return g.nodes[n].get('label') if 'label' in g.nodes[n] else None
+
+def choose_query_root(q, strategy="rare_label_high_degree"):
+    labels = [get_node_label(q, n) for n in q.nodes]
+    freq = Counter(labels)
+    if strategy == "rare_label_high_degree":
+        # Prefer rare labels, then higher degree
+        def key(n):
+            lbl = get_node_label(q, n)
+            return (freq.get(lbl, 0), -q.degree[n])
+        return min(q.nodes, key=key)
+    elif strategy == "high_degree":
+        return max(q.nodes, key=lambda n: q.degree[n])
+    else:
+        # default fallback
+        return next(iter(q.nodes))
+
+def select_anchor_candidates(q, t, sample_anchors, degree_tol=0.2, use_label=True, strategy="rare_label_high_degree"):
+    root = choose_query_root(q, strategy=strategy)
+    q_lbl = get_node_label(q, root)
+    q_deg = q.degree[root]
+
+    # Build candidate set by filters
+    candidates = []
+    for n in t.nodes:
+        if use_label:
+            t_lbl = get_node_label(t, n)
+            if t_lbl != q_lbl:
+                continue
+        if q_deg > 0:
+            low = max(0, int((1 - degree_tol) * q_deg))
+            high = int((1 + degree_tol) * q_deg) + 1
+            t_deg = t.degree[n]
+            if not (low <= t_deg <= high):
+                continue
+        candidates.append(n)
+
+    if len(candidates) <= sample_anchors:
+        return candidates
+    return random.sample(candidates, sample_anchors)
 
 def compute_graph_stats(G):
     """Compute graph statistics for filtering."""
@@ -130,6 +173,10 @@ def arg_parse():
     parser.add_argument('--use_sampling', action="store_true", help='Use node sampling for very large graphs')
     parser.add_argument('--graph_type', type=str, default='auto', choices=['directed', 'undirected', 'auto'],
                        help='Graph type: directed, undirected, or auto-detect')
+    parser.add_argument('--anchor_degree_tolerance', type=float, default=0.2, help='Degree tolerance for selecting anchor candidates')
+    parser.add_argument('--anchor_use_label', action='store_true', help='Match anchor candidates by node label')
+    parser.add_argument('--anchor_strategy', type=str, default='rare_label_high_degree', choices=['rare_label_high_degree','high_degree','first'], help='How to select the query root for anchoring')
+
     parser.set_defaults(dataset="enzymes",
                        queries_path="results/out-patterns.p",
                        out_path="results/counts.json",
@@ -219,7 +266,12 @@ def count_graphlets_helper(inp):
                 nx.set_node_attributes(target, 0, name="anchor")
                 if anchor_or_none in target:
                     target.nodes[anchor_or_none]["anchor"] = 1
-                node_match = iso.categorical_node_match(["anchor"], [0])
+                # Label-aware matching along with anchor attribute if labels exist
+                # Defaults ensure robustness when labels are missing
+                if any('label' in target.nodes[n] for n in target.nodes) and any('label' in query.nodes[n] for n in query.nodes):
+                    node_match = iso.categorical_node_match(["anchor", "label"], [0, None])
+                else:
+                    node_match = iso.categorical_node_match(["anchor"], [0])
                 matcher = iso.DiGraphMatcher(target, query, node_match=node_match) if target.is_directed() else iso.GraphMatcher(target, query, node_match=node_match)
                 if time.time() > deadline:
                     return q_idx, 0
@@ -373,11 +425,18 @@ def count_graphlets(queries, targets, args):
                 print(f"Skipping already processed task {task_base_id}")
                 continue
             if args.node_anchored:
-                nodes = list(t.nodes)
-                if len(nodes) > args.sample_anchors:
-                    anchors = random.sample(nodes, args.sample_anchors)
-                else:
-                    anchors = nodes
+                # Smart candidate selection: match label and degree of a canonical query node
+                anchors = select_anchor_candidates(
+                    q, t,
+                    sample_anchors=args.sample_anchors,
+                    degree_tol=args.anchor_degree_tolerance,
+                    use_label=args.anchor_use_label,
+                    strategy=args.anchor_strategy,
+                )
+                if not anchors:
+                    # Fallback to a tiny random sample to avoid missing rare cases
+                    nodes = list(t.nodes)
+                    anchors = random.sample(nodes, min(10, len(nodes))) if nodes else []
                 for anchor in anchors:
                     inp.append((qi, ti, args.count_method, args.node_anchored, anchor, args.timeout))
             else:
