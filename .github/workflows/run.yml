@@ -116,6 +116,10 @@ jobs:
                 --queries_path=results/patterns.pkl \
                 --out_path=results/ \
                 --node_anchored \
+                --graph_type undirected \
+                --node_anchored \
+                --anchor_use_label \
+                --anchor_degree_tolerance 0.2 \
                 
               echo 'Counting completed.'
               ls -la /app/results
