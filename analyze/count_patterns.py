@@ -355,6 +355,52 @@ def save_checkpoint(n_matches, checkpoint_file):
         json.dump({str(k): v for k, v in n_matches.items()}, f)
     print(f"Checkpoint saved to {checkpoint_file}")
 
+def load_checkpoint(checkpoint_file):
+    """Load checkpoint mapping query index -> accumulated count. Returns defaultdict(float)."""
+    if os.path.exists(checkpoint_file):
+        try:
+            with open(checkpoint_file, 'r') as f:
+                checkpoint = json.load(f)
+            return defaultdict(float, {int(k): v for k, v in checkpoint.items()})
+        except Exception as e:
+            print(f"Error loading checkpoint file {checkpoint_file}: {e}. Starting fresh")
+    return defaultdict(float)
+
+def sample_subgraphs(target, n_samples=10, max_size=1000):
+    """Random BFS-like expansions to bounded-size induced subgraphs from target.
+    Useful to bound runtime on huge graphs when --use_sampling is set.
+    """
+    subgraphs = []
+    nodes = list(target.nodes())
+    if not nodes:
+        return [target]
+
+    for _ in range(n_samples):
+        start_node = random.choice(nodes)
+        sub_nodes = {start_node}
+        if target.is_directed():
+            frontier = list(set(target.successors(start_node)) | set(target.predecessors(start_node)))
+        else:
+            frontier = list(target.neighbors(start_node))
+
+        while len(sub_nodes) < max_size and frontier:
+            u = frontier.pop(0)
+            if u in sub_nodes:
+                continue
+            sub_nodes.add(u)
+            if target.is_directed():
+                new_neigh = set(target.successors(u)) | set(target.predecessors(u))
+            else:
+                new_neigh = set(target.neighbors(u))
+            # Enqueue unseen neighbors
+            for v in new_neigh:
+                if v not in sub_nodes and v not in frontier:
+                    frontier.append(v)
+
+        subgraphs.append(target.subgraph(sub_nodes).copy())
+
+    return subgraphs
+
 def count_graphlets(queries, targets, args):
     print(f"Processing {len(queries)} queries across {len(targets)} targets")
     
