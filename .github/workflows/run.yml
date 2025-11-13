@@ -112,7 +112,7 @@ jobs:
               export PYTHONPATH=/app
               echo 'Running pattern counter...'
               python -m analyze.count_patterns \
-                --dataset=graph.pkl \
+                --dataset=metta.pkl \
                 --queries_path=results/patterns.pkl \
                 --out_path=results/ \
                 --node_anchored \
