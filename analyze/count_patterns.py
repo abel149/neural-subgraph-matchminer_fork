@@ -116,6 +116,56 @@ def select_anchor_candidates(q, t, sample_anchors, degree_tol=0.2, use_label=Tru
         return candidates
     return random.sample(candidates, sample_anchors)
 
+def get_node_attr(g, n, keys):
+    for k in keys:
+        if k in g.nodes[n]:
+            return g.nodes[n][k]
+    return None
+
+def compute_anchor_signature(q):
+    """Return a simple anchor signature for query q.
+    Chooses the node with anchor=1 if present; otherwise any node.
+    Signature fields: anchor id, degree, label/role, neighbor label multiset.
+    """
+    anchor = None
+    for n in q.nodes:
+        if q.nodes[n].get('anchor', 0) == 1:
+            anchor = n
+            break
+    if anchor is None:
+        anchor = next(iter(q.nodes))
+    lbl = get_node_attr(q, anchor, ['label', 'role'])
+    deg = q.degree[anchor]
+    if q.is_directed():
+        nbrs = set(q.successors(anchor)) | set(q.predecessors(anchor))
+    else:
+        nbrs = set(q.neighbors(anchor))
+    neigh_labels = [get_node_attr(q, v, ['label', 'role']) for v in nbrs]
+    return {
+        'anchor': anchor,
+        'label': lbl,
+        'degree': deg,
+        'neigh_multiset': Counter(neigh_labels)
+    }
+
+def compute_target_signatures(t):
+    """Return dict: node -> {'label','degree','neigh_multiset'} for target graph t."""
+    sigs = {}
+    for n in t.nodes:
+        lbl = get_node_attr(t, n, ['label', 'role'])
+        deg = t.degree[n]
+        if t.is_directed():
+            nbrs = set(t.successors(n)) | set(t.predecessors(n))
+        else:
+            nbrs = set(t.neighbors(n))
+        neigh_labels = [get_node_attr(t, v, ['label', 'role']) for v in nbrs]
+        sigs[n] = {
+            'label': lbl,
+            'degree': deg,
+            'neigh_multiset': Counter(neigh_labels)
+        }
+    return sigs
+
 def compute_graph_stats(G):
     """Compute graph statistics for filtering."""
     stats = {
