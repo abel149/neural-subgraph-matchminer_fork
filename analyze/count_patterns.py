@@ -1,52 +1,33 @@
 import argparse
-import csv
 import time
 import os
 import json
-import concurrent.futures
-import sys
-
-import numpy as np
-import torch
-import torch.optim as optim
-import torch.nn as nn
-import torch.nn.functional as F
-
-from torch_geometric.datasets import TUDataset
-from torch_geometric.datasets import Planetoid, KarateClub, QM7b
-from torch_geometric.data import DataLoader
-import torch_geometric.utils as pyg_utils
-
-import torch_geometric.nn as pyg_nn
-from matplotlib import cm
-
-from common import data
-from common import models
-from common import utils
-from subgraph_mining import decoder
-
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-
-from multiprocessing import Pool
 import random
-from sklearn.manifold import TSNE
-from sklearn.cluster import KMeans
-from collections import defaultdict, Counter
-from itertools import permutations
-from queue import PriorityQueue
-import matplotlib.colors as mcolors
+import pickle
 import networkx as nx
 import networkx.algorithms.isomorphism as iso
-import pickle
-import torch.multiprocessing as mp
-from sklearn.decomposition import PCA
-from itertools import combinations
+from multiprocessing import Pool
+from collections import defaultdict
 
+# Constants
 MAX_SEARCH_TIME = 1800  
 MAX_MATCHES_PER_QUERY = 10000
 DEFAULT_SAMPLE_ANCHORS = 1000
-CHECKPOINT_INTERVAL = 100  
+CHECKPOINT_INTERVAL = 100
+
+# Global caches for worker processes
+_GLOBAL_QUERIES = None
+_GLOBAL_TARGETS = None
+_GLOBAL_QUERY_STATS = None
+_GLOBAL_TARGET_STATS = None
+
+def _init_worker(queries, targets, query_stats, target_stats):
+    """Initializer for worker processes: set global references."""
+    global _GLOBAL_QUERIES, _GLOBAL_TARGETS, _GLOBAL_QUERY_STATS, _GLOBAL_TARGET_STATS
+    _GLOBAL_QUERIES = queries
+    _GLOBAL_TARGETS = targets
+    _GLOBAL_QUERY_STATS = query_stats
+    _GLOBAL_TARGET_STATS = target_stats
 
 def compute_graph_stats(G):
     """Compute graph statistics for filtering."""
@@ -81,7 +62,6 @@ def can_be_isomorphic(query_stats, target_stats):
     if query_stats['is_directed'] != target_stats['is_directed']:
         return False
     
-    
     if len(query_stats['degree_seq']) > 0 and len(target_stats['degree_seq']) > 0:
         if query_stats['degree_seq'][0] > target_stats['degree_seq'][0]:
             return False
@@ -99,6 +79,32 @@ def can_be_isomorphic(query_stats, target_stats):
         return False
     
     return True
+
+def quick_anchor_check(query, target, anchor):
+    """NEW OPTIMIZATION: Fast pre-check before expensive isomorphism."""
+    # Check if anchor has enough neighbors for the query
+    anchor_degree = target.degree(anchor)
+    query_min_degree = min(dict(query.degree()).values())
+    
+    if anchor_degree < query_min_degree:
+        return False
+    
+    # Check if anchor's neighborhood is large enough
+    if target.is_directed():
+        neighbors = set(target.successors(anchor)) | set(target.predecessors(anchor))
+    else:
+        neighbors = set(target.neighbors(anchor))
+    
+    if len(neighbors) < query.number_of_nodes() - 1:
+        return False
+    
+    return True
+
+def get_smart_anchors(target, sample_anchors):
+    """NEW OPTIMIZATION: Get anchors sorted by degree (highest first)."""
+    degrees = dict(target.degree())
+    anchors = sorted(degrees.keys(), key=lambda x: degrees[x], reverse=True)
+    return anchors[:sample_anchors]
 
 def arg_parse():
     parser = argparse.ArgumentParser(description='count graphlets in a graph')
@@ -126,142 +132,137 @@ def arg_parse():
     return parser.parse_args()
 
 def load_networkx_graph(filepath, directed=None):
-    """Load a Networkx graph from pickle format with proper attributes handling.
-    
-    Args:
-        filepath: Path to the pickle file
-        directed: If True, create DiGraph; if False, create Graph; if None, auto-detect
-    """
+    """Load a Networkx graph from pickle format with proper attributes handling."""
     with open(filepath, 'rb') as f:
         data = pickle.load(f)
         
-        if isinstance(data, (nx.Graph, nx.DiGraph)):
-            if directed is None:
-                return data
-            elif directed and not data.is_directed():
-                return data.to_directed()
-            elif not directed and data.is_directed():
-                return data.to_undirected()
-            else:
-                return data
-        
+    if isinstance(data, (nx.Graph, nx.DiGraph)):
         if directed is None:
-            if isinstance(data, dict):
-                directed = data.get('directed', False)
-        
-        graph = nx.DiGraph() if directed else nx.Graph()
-        
-        for node in data['nodes']:
-            if isinstance(node, tuple):
-                node_id, attrs = node
-                graph.add_node(node_id, **attrs)
-            else:
-                graph.add_node(node)
-        
-        for edge in data['edges']:
-            if len(edge) == 3:
-                src, dst, attrs = edge
-                graph.add_edge(src, dst, **attrs)
-            else:
-                src, dst = edge[:2]
-                graph.add_edge(src, dst)
-                
-        return graph
+            return data
+        elif directed and not data.is_directed():
+            return data.to_directed()
+        elif not directed and data.is_directed():
+            return data.to_undirected()
+        else:
+            return data
+    
+    if directed is None:
+        if isinstance(data, dict):
+            directed = data.get('directed', False)
+    
+    graph = nx.DiGraph() if directed else nx.Graph()
+    
+    for node in data['nodes']:
+        if isinstance(node, tuple):
+            node_id, attrs = node
+            graph.add_node(node_id, **attrs)
+        else:
+            graph.add_node(node)
+    
+    for edge in data['edges']:
+        if len(edge) == 3:
+            src, dst, attrs = edge
+            graph.add_edge(src, dst, **attrs)
+        else:
+            src, dst = edge[:2]
+            graph.add_edge(src, dst)
+            
+    return graph
 
 def count_graphlets_helper(inp):
-    i, query, target, method, node_anchored, anchor_or_none, timeout = inp
-    
+    q_idx, t_idx, method, node_anchored, anchor_or_none, timeout = inp
+    query = _GLOBAL_QUERIES[q_idx]
+    target = _GLOBAL_TARGETS[t_idx]
+    query_stats = _GLOBAL_QUERY_STATS[q_idx]
+    target_stats = _GLOBAL_TARGET_STATS[t_idx]
+
     start_time = time.time()
-    
-    effective_timeout = min(timeout, 600)  
-    
-    query_stats = compute_graph_stats(query)
-    target_stats = compute_graph_stats(target)
+    deadline = start_time + min(timeout, 600)
+
+    if node_anchored and anchor_or_none is not None:
+        if anchor_or_none not in target:
+            return q_idx, 0
+        if not quick_anchor_check(query, target, anchor_or_none):
+            return q_idx, 0
+
     if not can_be_isomorphic(query_stats, target_stats):
-        return i, 0
-    
-    query = query.copy()
-    query.remove_edges_from(nx.selfloop_edges(query))
-    target = target.copy()
-    target.remove_edges_from(nx.selfloop_edges(target))
+        return q_idx, 0
 
     count = 0
     try:
-        import signal
-        
-        def timeout_handler(signum, frame):
-            raise TimeoutError(f"Task {i} timed out after {effective_timeout} seconds")
-            
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(effective_timeout)
-        
         if method == "freq":
             if query.is_directed():
                 ismags = nx.isomorphism.DiGraphMatcher(query, query)
             else:
                 ismags = nx.isomorphism.ISMAGS(query, query)
-            n_symmetries = len(list(ismags.isomorphisms_iter(symmetry=False)))
-        
-        if method == "bin":
-            if node_anchored:
-                nx.set_node_attributes(target, 0, name="anchor")
+            n_symmetries = 0
+            for _ in ismags.isomorphisms_iter(symmetry=False):
+                n_symmetries += 1
+                if time.time() > deadline:
+                    break
+            n_symmetries = max(1, n_symmetries)
+
+        if node_anchored:
+            prev_anchor = {}
+            for n in target.nodes:
+                if 'anchor' in target.nodes[n]:
+                    prev_anchor[n] = target.nodes[n]['anchor']
+            nx.set_node_attributes(target, 0, name="anchor")
+            if anchor_or_none in target:
                 target.nodes[anchor_or_none]["anchor"] = 1
-                
+
+            try:
+                node_match = iso.categorical_node_match(["anchor"], [0])
                 if target.is_directed():
-                    matcher = iso.DiGraphMatcher(target, query,
-                        node_match=iso.categorical_node_match(["anchor"], [0]))
+                    matcher = iso.DiGraphMatcher(target, query, node_match=node_match)
                 else:
-                    matcher = iso.GraphMatcher(target, query,
-                        node_match=iso.categorical_node_match(["anchor"], [0]))
-                
-                if time.time() - start_time > timeout:
-                    print(f"Timeout on query {i} before isomorphism check")
-                    return i, 0
-                
-                count = int(matcher.subgraph_is_isomorphic())
-            else:
-                if target.is_directed():
-                    matcher = iso.DiGraphMatcher(target, query)
+                    matcher = iso.GraphMatcher(target, query, node_match=node_match)
+
+                if time.time() > deadline:
+                    return q_idx, 0
+
+                if method == "bin":
+                    count = int(matcher.subgraph_is_isomorphic())
                 else:
-                    matcher = iso.GraphMatcher(target, query)
-                
-                if time.time() - start_time > timeout:
-                    print(f"Timeout on query {i} before isomorphism check")
-                    return i, 0
-                
-                count = int(matcher.subgraph_is_isomorphic())
-        elif method == "freq":
+                    c = 0
+                    for _ in matcher.subgraph_isomorphisms_iter():
+                        if time.time() > deadline or c >= MAX_MATCHES_PER_QUERY:
+                            break
+                        c += 1
+                    count = c / n_symmetries if n_symmetries else c
+            finally:
+                for n in target.nodes:
+                    if n in prev_anchor:
+                        target.nodes[n]['anchor'] = prev_anchor[n]
+                    elif 'anchor' in target.nodes[n]:
+                        del target.nodes[n]['anchor']
+        else:
             if target.is_directed():
                 matcher = iso.DiGraphMatcher(target, query)
             else:
                 matcher = iso.GraphMatcher(target, query)
-            
-            count = 0
-            for _ in matcher.subgraph_isomorphisms_iter():
-                if time.time() - start_time > timeout:
-                    print(f"Timeout during isomorphism iteration for query {i}")
-                    break
-                count += 1
-                if count >= MAX_MATCHES_PER_QUERY:
-                    break
-            
-            if method == "freq" and n_symmetries > 0:
-                count = count / n_symmetries
-        
-        signal.alarm(0)
-            
-    except TimeoutError as e:
-        print(f"Task {i} timed out: {str(e)}")
-        count = 0
+
+            if time.time() > deadline:
+                return q_idx, 0
+
+            if method == "bin":
+                count = int(matcher.subgraph_is_isomorphic())
+            else:
+                c = 0
+                for _ in matcher.subgraph_isomorphisms_iter():
+                    if time.time() > deadline or c >= MAX_MATCHES_PER_QUERY:
+                        break
+                    c += 1
+                count = c / n_symmetries if n_symmetries else c
+
     except Exception as e:
-        print(f"Error processing query {i}: {str(e)}")
         count = 0
-        
+
     processing_time = time.time() - start_time
-    if processing_time > 10: 
-        print(f"Query {i} processed in {processing_time:.2f} seconds with count {count}")
-        
-    return i, count
+    if processing_time > 10:
+        print(f"Query (q={q_idx}, t={t_idx}) processed in {processing_time:.2f} seconds with count {count}")
+
+    return q_idx, count
 
 def save_checkpoint(n_matches, checkpoint_file):
     with open(checkpoint_file, 'w') as f:
@@ -337,49 +338,56 @@ def count_graphlets(queries, targets, args):
                 sampled_targets.append(target)
         targets = sampled_targets
         print(f"After sampling: {len(targets)} target graphs to process")
-    
-    with Pool(processes=args.n_workers) as pool:
-        target_stats = pool.map(compute_graph_stats, targets)
-        query_stats = pool.map(compute_graph_stats, queries)
-    
+
+    def _clean(g):
+        if any(True for _ in nx.selfloop_edges(g)):
+            h = g.copy()
+            h.remove_edges_from(list(nx.selfloop_edges(h)))
+            return h
+        return g
+
+    queries = [_clean(q) for q in queries]
+    targets = [_clean(t) for t in targets]
+
+    query_stats = [compute_graph_stats(q) for q in queries]
+    target_stats = [compute_graph_stats(t) for t in targets]
+
     inp = []
-    for i, (query, q_stats) in enumerate(zip(queries, query_stats)):
-        if query.number_of_nodes() > args.max_query_size:
-            print(f"Skipping query {i}: exceeds max size {args.max_query_size}")
+    for qi, q in enumerate(queries):
+        if q.number_of_nodes() > args.max_query_size:
+            print(f"Skipping query {qi}: exceeds max size {args.max_query_size}")
             continue
-            
-        for t_idx, (target, t_stats) in enumerate(zip(targets, target_stats)):
+        q_stats = query_stats[qi]
+        for ti, t in enumerate(targets):
+            t_stats = target_stats[ti]
             if not can_be_isomorphic(q_stats, t_stats):
                 continue
-            
-            task_id = f"{i}_{t_idx}"
-            
+
+            task_id = f"{qi}_{ti}"
+
             if task_id in problematic_tasks:
                 print(f"Skipping known problematic task {task_id}")
                 continue
-                
+
             if task_id in n_matches:
                 print(f"Skipping already processed task {task_id}")
                 continue
-                
+
             if args.node_anchored:
-                if target.number_of_nodes() > args.sample_anchors:
-                    anchors = random.sample(list(target.nodes), args.sample_anchors)
+                if t.number_of_nodes() > args.sample_anchors:
+                    anchors = get_smart_anchors(t, args.sample_anchors)
                 else:
-                    anchors = list(target.nodes)
-                    
+                    anchors = list(t.nodes)
                 for anchor in anchors:
-                    inp.append((i, query, target, args.count_method, args.node_anchored, anchor, 
-                             args.timeout))
+                    inp.append((qi, ti, args.count_method, args.node_anchored, anchor, args.timeout))
             else:
-                inp.append((i, query, target, args.count_method, args.node_anchored, None, 
-                         args.timeout))
-    
+                inp.append((qi, ti, args.count_method, args.node_anchored, None, args.timeout))
+
     print(f"Generated {len(inp)} tasks after filtering")
     n_done = 0
     last_checkpoint = time.time()
-   
-    with Pool(processes=args.n_workers) as pool:
+
+    with Pool(processes=args.n_workers, initializer=_init_worker, initargs=(queries, targets, query_stats, target_stats)) as pool:
         for batch_start in range(0, len(inp), args.batch_size):
             batch_end = min(batch_start + args.batch_size, len(inp))
             batch = inp[batch_start:batch_end]
@@ -390,20 +398,20 @@ def count_graphlets(queries, targets, args):
             results = pool.imap_unordered(count_graphlets_helper, batch)
 
             for result in results:
-                if time.time() - batch_start_time > 3600:  
+                if time.time() - batch_start_time > 3600:
                     print(f"Batch {batch_start}-{batch_end} taking too long, marking remaining tasks problematic")
                     for task in batch:
-                        i = task[0]
-                        task_id = f"{i}_{batch_start}"
-                        problematic_tasks.add(task_id)
+                        qi = task[0]
+                        ti = task[1]
+                        problematic_tasks.add(f"{qi}_{ti}")
                     break
 
-                i, n = result
-                n_matches[i] += n
+                qi, n = result
+                n_matches[qi] += n
                 n_done += 1
 
-                if n_done % 10 == 0:
-                    print(f"Processed {n_done}/{len(inp)} tasks, queries with matches: {sum(1 for v in n_matches.values() if v > 0)}/{len(n_matches)}", flush=True)
+                if n_done % 50 == 0:
+                    print(f"Processed {n_done}/{len(inp)} tasks, queries with matches: {sum(1 for v in n_matches.values() if v > 0)}/{len(n_matches)}")
 
                 if time.time() - last_checkpoint > 300:
                     save_checkpoint(n_matches, args.checkpoint_file)
@@ -418,14 +426,10 @@ def count_graphlets(queries, targets, args):
     print("\nDone counting")
     return [n_matches[i] for i in range(len(queries))]
 
-
 def generate_one_baseline(args):
-    import networkx as nx
-    import random
-
     i, query, targets, method = args
 
-    if len(query) == 0:
+    if query.number_of_nodes() == 0:
         return query
 
     MAX_ATTEMPTS = 100 
@@ -463,7 +467,7 @@ def generate_one_baseline(args):
                     largest_cc = max(nx.connected_components(subgraph), key=len)
                 neigh = subgraph.subgraph(largest_cc)
                 neigh = nx.convert_node_labels_to_integers(neigh)
-                if len(neigh) == len(query):
+                if neigh.number_of_nodes() == query.number_of_nodes():
                     return neigh
 
             elif method == "tree":
@@ -474,7 +478,7 @@ def generate_one_baseline(args):
                 else:
                     frontier = list(set(graph.neighbors(start_node)) - set(neigh))
                 
-                while len(neigh) < len(query) and frontier:
+                while len(neigh) < query.number_of_nodes() and frontier:
                     new_node = random.choice(frontier)
                     neigh.append(new_node)
                     if graph.is_directed():
@@ -484,7 +488,7 @@ def generate_one_baseline(args):
                     frontier += new_neighbors
                     frontier = [x for x in frontier if x not in neigh]
                 
-                if len(neigh) == len(query):
+                if len(neigh) == query.number_of_nodes():
                     sub = graph.subgraph(neigh)
                     return nx.convert_node_labels_to_integers(sub)
 
@@ -504,7 +508,6 @@ def gen_baseline_queries(queries, targets, method="radial", node_anchored=False)
     return results
 
 def main():
-    global args
     args = arg_parse()
     print("Using {} workers".format(args.n_workers))
     print("Baseline:", args.baseline)
@@ -529,14 +532,19 @@ def main():
             print(f"Error loading graph: {str(e)}")
             raise
     elif args.dataset == 'enzymes':
+        from torch_geometric.datasets import TUDataset
         dataset = TUDataset(root='/tmp/ENZYMES', name='ENZYMES')
     elif args.dataset == 'cox2':
+        from torch_geometric.datasets import TUDataset
         dataset = TUDataset(root='/tmp/cox2', name='COX2')
     elif args.dataset == 'reddit-binary':
+        from torch_geometric.datasets import TUDataset
         dataset = TUDataset(root='/tmp/REDDIT-BINARY', name='REDDIT-BINARY')
     elif args.dataset == 'coil':
+        from torch_geometric.datasets import TUDataset
         dataset = TUDataset(root='/tmp/coil', name='COIL-DEL')
     elif args.dataset == 'ppi-pathways':
+        import csv
         graph = nx.DiGraph() if use_directed else nx.Graph()
         with open("data/ppi-pathways.csv", "r") as f:
             reader = csv.reader(f)
@@ -557,16 +565,19 @@ def main():
         dataset = [graph]
     elif args.dataset.startswith('plant-'):
         size = int(args.dataset.split("-")[-1])
+        from subgraph_mining import decoder
         dataset = decoder.make_plant_dataset(size)
     elif args.dataset == "analyze":
         with open("results/analyze.p", "rb") as f:
             cand_patterns, _ = pickle.load(f)
             queries = [q for score, q in cand_patterns[10]][:200]
+        from torch_geometric.datasets import TUDataset
         dataset = TUDataset(root='/tmp/ENZYMES', name='ENZYMES')
 
     targets = []
     for i, graph in enumerate(dataset):
         if not isinstance(graph, (nx.Graph, nx.DiGraph)):
+            import torch_geometric.utils as pyg_utils
             if args.graph_type == 'auto':
                 graph = pyg_utils.to_networkx(graph).to_undirected()
             elif use_directed:
@@ -594,7 +605,7 @@ def main():
     else:
         queries = [q.to_undirected() if q.is_directed() else q for q in queries]
             
-    query_lens = [len(query) for query in queries]
+    query_lens = [q.number_of_nodes() for q in queries]
     print(f"Loaded {len(queries)} query patterns")
     print(f"Query graph type: {'directed' if queries[0].is_directed() else 'undirected'}")
     print(f"Target graph type: {'directed' if targets[0].is_directed() else 'undirected'}")
@@ -608,7 +619,7 @@ def main():
         print(f"Generating baseline queries using {args.baseline}")
         baseline_queries = gen_baseline_queries(queries, targets,
             node_anchored=args.node_anchored, method=args.baseline)
-        query_lens = [len(q) for q in baseline_queries]
+        query_lens = [q.number_of_nodes() for q in baseline_queries]
         n_matches = count_graphlets(baseline_queries, targets, args)
             
     # Save results
@@ -623,8 +634,6 @@ def main():
     
     print(f"Results saved to {output_file}")
     print("=== Completed ===")
-
-
 
 if __name__ == "__main__":
     main()
