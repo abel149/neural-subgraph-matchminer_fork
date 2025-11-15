@@ -116,7 +116,7 @@ jobs:
                 --dataset=test_100n_200e.pkl \
                 --queries_path=results/patterns.pkl \
                 --out_path=results/ \
-                --graph_type=directed \
+                --node_anchored \
                 
                 
                 
