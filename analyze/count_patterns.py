@@ -20,10 +20,7 @@ import torch_geometric.utils as pyg_utils
 import torch_geometric.nn as pyg_nn
 from matplotlib import cm
 
-from common import data
-from common import models
-from common import utils
-from subgraph_mining import decoder
+
 
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -47,6 +44,20 @@ MAX_SEARCH_TIME = 1800
 MAX_MATCHES_PER_QUERY = 10000
 DEFAULT_SAMPLE_ANCHORS = 1000
 CHECKPOINT_INTERVAL = 100  
+
+# Global caches for worker processes
+_GLOBAL_QUERIES = None
+_GLOBAL_TARGETS = None
+_GLOBAL_QUERY_STATS = None
+_GLOBAL_TARGET_STATS = None
+
+def _init_worker(queries, targets, query_stats, target_stats):
+    """Initializer for worker processes: set global references."""
+    global _GLOBAL_QUERIES, _GLOBAL_TARGETS, _GLOBAL_QUERY_STATS, _GLOBAL_TARGET_STATS
+    _GLOBAL_QUERIES = queries
+    _GLOBAL_TARGETS = targets
+    _GLOBAL_QUERY_STATS = query_stats
+    _GLOBAL_TARGET_STATS = target_stats
 
 def compute_graph_stats(G):
     """Compute graph statistics for filtering."""
@@ -117,12 +128,13 @@ def arg_parse():
     parser.add_argument('--use_sampling', action="store_true", help='Use node sampling for very large graphs')
     parser.add_argument('--graph_type', type=str, default='auto', choices=['directed', 'undirected', 'auto'],
                        help='Graph type: directed, undirected, or auto-detect')
-    parser.set_defaults(dataset="enzymes",
-                       queries_path="results/out-patterns.p",
-                       out_path="results/counts.json",
+    parser.set_defaults(dataset="test_100n_200e.pkl",
+                       queries_path="patterns_test.pkl",
+                       out_path="counts.json",
                        n_workers=4,
                        count_method="bin",
-                       baseline="none")
+                       baseline="none",
+                       node_anchored=True)
     return parser.parse_args()
 
 def load_networkx_graph(filepath, directed=None):
@@ -169,17 +181,18 @@ def load_networkx_graph(filepath, directed=None):
         return graph
 
 def count_graphlets_helper(inp):
-    i, query, target, method, node_anchored, anchor_or_none, timeout = inp
-    
+    q_idx, t_idx, method, node_anchored, anchor_or_none, timeout = inp
+
+    query = _GLOBAL_QUERIES[q_idx]
+    target = _GLOBAL_TARGETS[t_idx]
+    query_stats = _GLOBAL_QUERY_STATS[q_idx]
+    target_stats = _GLOBAL_TARGET_STATS[t_idx]
+
     start_time = time.time()
-    
-    effective_timeout = min(timeout, 600)  
-    
-    query_stats = compute_graph_stats(query)
-    target_stats = compute_graph_stats(target)
+
     if not can_be_isomorphic(query_stats, target_stats):
-        return i, 0
-    
+        return q_idx, 0
+
     query = query.copy()
     query.remove_edges_from(nx.selfloop_edges(query))
     target = target.copy()
@@ -187,25 +200,18 @@ def count_graphlets_helper(inp):
 
     count = 0
     try:
-        import signal
-        
-        def timeout_handler(signum, frame):
-            raise TimeoutError(f"Task {i} timed out after {effective_timeout} seconds")
-            
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(effective_timeout)
-        
         if method == "freq":
             if query.is_directed():
                 ismags = nx.isomorphism.DiGraphMatcher(query, query)
             else:
                 ismags = nx.isomorphism.ISMAGS(query, query)
             n_symmetries = len(list(ismags.isomorphisms_iter(symmetry=False)))
-        
+
         if method == "bin":
             if node_anchored:
                 nx.set_node_attributes(target, 0, name="anchor")
-                target.nodes[anchor_or_none]["anchor"] = 1
+                if anchor_or_none in target:
+                    target.nodes[anchor_or_none]["anchor"] = 1
                 
                 if target.is_directed():
                     matcher = iso.DiGraphMatcher(target, query,
@@ -215,8 +221,8 @@ def count_graphlets_helper(inp):
                         node_match=iso.categorical_node_match(["anchor"], [0]))
                 
                 if time.time() - start_time > timeout:
-                    print(f"Timeout on query {i} before isomorphism check")
-                    return i, 0
+                    print(f"Timeout on query {q_idx} before isomorphism check")
+                    return q_idx, 0
                 
                 count = int(matcher.subgraph_is_isomorphic())
             else:
@@ -226,8 +232,8 @@ def count_graphlets_helper(inp):
                     matcher = iso.GraphMatcher(target, query)
                 
                 if time.time() - start_time > timeout:
-                    print(f"Timeout on query {i} before isomorphism check")
-                    return i, 0
+                    print(f"Timeout on query {q_idx} before isomorphism check")
+                    return q_idx, 0
                 
                 count = int(matcher.subgraph_is_isomorphic())
         elif method == "freq":
@@ -239,7 +245,7 @@ def count_graphlets_helper(inp):
             count = 0
             for _ in matcher.subgraph_isomorphisms_iter():
                 if time.time() - start_time > timeout:
-                    print(f"Timeout during isomorphism iteration for query {i}")
+                    print(f"Timeout during isomorphism iteration for query {q_idx}")
                     break
                 count += 1
                 if count >= MAX_MATCHES_PER_QUERY:
@@ -247,21 +253,19 @@ def count_graphlets_helper(inp):
             
             if method == "freq" and n_symmetries > 0:
                 count = count / n_symmetries
-        
-        signal.alarm(0)
-            
+
     except TimeoutError as e:
-        print(f"Task {i} timed out: {str(e)}")
+        print(f"Task {q_idx} timed out: {str(e)}")
         count = 0
     except Exception as e:
-        print(f"Error processing query {i}: {str(e)}")
+        print(f"Error processing query {q_idx}: {str(e)}")
         count = 0
         
     processing_time = time.time() - start_time
     if processing_time > 10: 
-        print(f"Query {i} processed in {processing_time:.2f} seconds with count {count}")
+        print(f"Query {q_idx} processed in {processing_time:.2f} seconds with count {count}")
         
-    return i, count
+    return q_idx, count
 
 def save_checkpoint(n_matches, checkpoint_file):
     with open(checkpoint_file, 'w') as f:
@@ -337,22 +341,23 @@ def count_graphlets(queries, targets, args):
                 sampled_targets.append(target)
         targets = sampled_targets
         print(f"After sampling: {len(targets)} target graphs to process")
-    
-    with Pool(processes=args.n_workers) as pool:
-        target_stats = pool.map(compute_graph_stats, targets)
-        query_stats = pool.map(compute_graph_stats, queries)
-    
+
+    query_stats = [compute_graph_stats(q) for q in queries]
+    target_stats = [compute_graph_stats(t) for t in targets]
+
     inp = []
-    for i, (query, q_stats) in enumerate(zip(queries, query_stats)):
-        if query.number_of_nodes() > args.max_query_size:
-            print(f"Skipping query {i}: exceeds max size {args.max_query_size}")
+    for qi, q in enumerate(queries):
+        if q.number_of_nodes() > args.max_query_size:
+            print(f"Skipping query {qi}: exceeds max size {args.max_query_size}")
             continue
-            
-        for t_idx, (target, t_stats) in enumerate(zip(targets, target_stats)):
+        q_stats = query_stats[qi]
+
+        for ti, t in enumerate(targets):
+            t_stats = target_stats[ti]
             if not can_be_isomorphic(q_stats, t_stats):
                 continue
             
-            task_id = f"{i}_{t_idx}"
+            task_id = f"{qi}_{ti}"
             
             if task_id in problematic_tasks:
                 print(f"Skipping known problematic task {task_id}")
@@ -363,23 +368,21 @@ def count_graphlets(queries, targets, args):
                 continue
                 
             if args.node_anchored:
-                if target.number_of_nodes() > args.sample_anchors:
-                    anchors = random.sample(list(target.nodes), args.sample_anchors)
+                if t.number_of_nodes() > args.sample_anchors:
+                    anchors = random.sample(list(t.nodes), args.sample_anchors)
                 else:
-                    anchors = list(target.nodes)
+                    anchors = list(t.nodes)
                     
                 for anchor in anchors:
-                    inp.append((i, query, target, args.count_method, args.node_anchored, anchor, 
-                             args.timeout))
+                    inp.append((qi, ti, args.count_method, args.node_anchored, anchor, args.timeout))
             else:
-                inp.append((i, query, target, args.count_method, args.node_anchored, None, 
-                         args.timeout))
+                inp.append((qi, ti, args.count_method, args.node_anchored, None, args.timeout))
     
     print(f"Generated {len(inp)} tasks after filtering")
     n_done = 0
     last_checkpoint = time.time()
    
-    with Pool(processes=args.n_workers) as pool:
+    with Pool(processes=args.n_workers, initializer=_init_worker, initargs=(queries, targets, query_stats, target_stats)) as pool:
         for batch_start in range(0, len(inp), args.batch_size):
             batch_end = min(batch_start + args.batch_size, len(inp))
             batch = inp[batch_start:batch_end]
@@ -557,7 +560,7 @@ def main():
         dataset = [graph]
     elif args.dataset.startswith('plant-'):
         size = int(args.dataset.split("-")[-1])
-        dataset = decoder.make_plant_dataset(size)
+       # dataset = decoder.make_plant_dataset(size)
     elif args.dataset == "analyze":
         with open("results/analyze.p", "rb") as f:
             cand_patterns, _ = pickle.load(f)
@@ -598,7 +601,9 @@ def main():
     print(f"Loaded {len(queries)} query patterns")
     print(f"Query graph type: {'directed' if queries[0].is_directed() else 'undirected'}")
     print(f"Target graph type: {'directed' if targets[0].is_directed() else 'undirected'}")
-
+    # ---- start timing the counting phase ----
+    overall_start = time.time()
+    
     if args.baseline == "exact":
         print("Using exact counting method")
         n_matches = count_graphlets(queries, targets, args)
@@ -610,7 +615,10 @@ def main():
             node_anchored=args.node_anchored, method=args.baseline)
         query_lens = [len(q) for q in baseline_queries]
         n_matches = count_graphlets(baseline_queries, targets, args)
-            
+    
+    total_time = time.time() - overall_start
+    print(f"Total counting time: {total_time:.2f} seconds")
+    # ---- end timing ----    
     # Save results
     query_lens = [q.number_of_nodes() for q in queries]
     output_file = os.path.join(args.out_path, "counts.json")
