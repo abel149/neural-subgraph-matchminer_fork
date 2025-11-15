@@ -95,7 +95,7 @@ jobs:
                 --dataset=metta.pkl \
                 --n_trials=200 \
                 --node_anchored \
-                --out_path=/app/results/patterns.pkl 
+                --out_path=/app/results/patterns.pkl \
                 
                 
               echo 'Checking output directories...'
@@ -115,7 +115,9 @@ jobs:
               python -m analyze.count_patterns \
                 --dataset=metta.pkl \
                 --queries_path=results/patterns.pkl \
-                --out_path=results/ 
+                --out_path=results/ \
+                --node_anchored \
+                --graph_type undirected \
                 
                 
                 
