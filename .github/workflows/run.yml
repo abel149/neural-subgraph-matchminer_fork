@@ -92,11 +92,11 @@ jobs:
               set -e
               echo 'Starting decoder run...'
               python -m subgraph_mining.decoder \
-                --dataset=metta.pkl \
+                --dataset=test_100n_200e.pkl \
                 --n_trials=200 \
                 --node_anchored \
                 --out_path=/app/results/patterns.pkl \
-                
+                --graph_type=directed
                 
               echo 'Checking output directories...'
               ls -la /app/plots/cluster
@@ -113,12 +113,10 @@ jobs:
               export PYTHONPATH=/app
               echo 'Running pattern counter...'
               python -m analyze.count_patterns \
-                --dataset=metta.pkl \
+                --dataset=test_100n_200e.pkl \
                 --queries_path=results/patterns.pkl \
                 --out_path=results/ \
-                --node_anchored \
-                --graph_type undirected \
-                
+                --graph_type=directed \
                 
                 
                 
