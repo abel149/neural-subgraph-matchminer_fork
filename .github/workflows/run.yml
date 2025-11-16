@@ -120,7 +120,10 @@ jobs:
                 --node_anchored \
                 --graph_type=directed \
                 --use_sampling=true
-
+              
+              echo 'Counting completed.'
+              ls -la /app/results
+            "
       # - name: Run matcher in Docker container
       #  run: |
       #   docker run --rm \
