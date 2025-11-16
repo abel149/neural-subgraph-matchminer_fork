@@ -119,7 +119,7 @@ jobs:
                 --out_path=results/ \
                 --node_anchored \
                 --graph_type=directed \
-                --use_sampling=true
+                --use_sampling
               
               echo 'Counting completed.'
               ls -la /app/results
