@@ -7,10 +7,10 @@ RUN apt-get update && apt-get install -y \
     software-properties-common \
     libigraph-dev python3-igraph \
     curl \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update \
-    && apt-get install -y \
-    python3.7 \
+    python3 \
+    python3-pip \
+    python3-dev \
+    python3-distutils \
     build-essential \
     pkg-config \
     git \
@@ -24,13 +24,10 @@ RUN apt-get update && apt-get install -y \
     python3-scipy \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl https://bootstrap.pypa.io/pip/3.7/get-pip.py -o get-pip.py \
-    && python3.7 get-pip.py \
-    && rm get-pip.py
 
-RUN ln -sf /usr/bin/python3.7 /usr/bin/python \
-    && ln -sf /usr/local/bin/pip3.7 /usr/bin/pip \
-    && ln -sf /usr/local/bin/pip3.7 /usr/bin/pip3
+
+RUN ln -sf /usr/bin/python3 /usr/bin/python \
+    && ln -sf /usr/bin/pip3 /usr/bin/pip
 
 WORKDIR /app
 
