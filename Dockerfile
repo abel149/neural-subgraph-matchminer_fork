@@ -37,8 +37,6 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
 RUN python -m pip install --no-cache-dir igraph
 
-RUN pip install --no-cache-dir numpy==1.21.6
-
 RUN pip install --no-cache-dir \
     matplotlib==2.1.1 \
     scikit-learn==1.0.2 \
@@ -59,5 +57,7 @@ RUN pip install --no-cache-dir \
     networkx==2.4 \
     test-tube==0.7.5 \
     tqdm==4.43.0
+
+RUN pip install --no-cache-dir numpy==1.21.6
 
 COPY . .
