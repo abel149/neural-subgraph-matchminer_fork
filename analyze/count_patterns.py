@@ -739,7 +739,7 @@ def main():
         dataset = [graph]
     elif args.dataset.startswith('plant-'):
         size = int(args.dataset.split("-")[-1])
-        dataset = decoder.make_plant_dataset(size)
+       # dataset = decoder.make_plant_dataset(size)
     elif args.dataset == "analyze":
         with open("results/analyze.p", "rb") as f:
             cand_patterns, _ = pickle.load(f)
@@ -780,7 +780,9 @@ def main():
     print(f"Loaded {len(queries)} query patterns")
     print(f"Query graph type: {'directed' if queries[0].is_directed() else 'undirected'}")
     print(f"Target graph type: {'directed' if targets[0].is_directed() else 'undirected'}")
-
+    # ---- start timing the counting phase ----
+    overall_start = time.time()
+    
     if args.baseline == "exact":
         print("Using exact counting method")
         n_matches = count_graphlets(queries, targets, args)
@@ -792,10 +794,22 @@ def main():
             node_anchored=args.node_anchored, method=args.baseline)
         query_lens = [len(q) for q in baseline_queries]
         n_matches = count_graphlets(baseline_queries, targets, args)
-            
-    with open(args.out_path, "w") as f:
-        json.dump((query_lens, n_matches, []), f)
-    print(f"Results saved to {args.out_path}")
+    
+    total_time = time.time() - overall_start
+    print(f"Total counting time: {total_time:.2f} seconds")
+    # ---- end timing ----    
+    # Save results
+    query_lens = [q.number_of_nodes() for q in queries]
+    output_file = os.path.join(args.out_path, "counts.json")
+    
+    # Ensure output directory exists
+    os.makedirs(args.out_path, exist_ok=True)
+    
+    with open(output_file, "w") as f:
+        json.dump({"query_lengths": query_lens, "counts": n_matches, "metadata": {}}, f)
+    
+    print(f"Results saved to {output_file}")
+    print("=== Completed ===")
 
 
 
