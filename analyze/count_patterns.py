@@ -19,9 +19,6 @@ import torch_geometric.utils as pyg_utils
 
 import torch_geometric.nn as pyg_nn
 from matplotlib import cm
-
-
-
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
@@ -51,13 +48,25 @@ _GLOBAL_TARGETS = None
 _GLOBAL_QUERY_STATS = None
 _GLOBAL_TARGET_STATS = None
 
-def _init_worker(queries, targets, query_stats, target_stats):
+_GLOBAL_ENGINE = None
+_GLOBAL_QUERIES_IG = None
+_GLOBAL_TARGETS_IG = None
+
+def _init_worker(queries, targets, query_stats, target_stats,
+                 queries_ig, targets_ig, engine):
     """Initializer for worker processes: set global references."""
-    global _GLOBAL_QUERIES, _GLOBAL_TARGETS, _GLOBAL_QUERY_STATS, _GLOBAL_TARGET_STATS
+    global _GLOBAL_QUERIES, _GLOBAL_TARGETS
+    global _GLOBAL_QUERY_STATS, _GLOBAL_TARGET_STATS
+    global _GLOBAL_ENGINE, _GLOBAL_QUERIES_IG, _GLOBAL_TARGETS_IG
+
     _GLOBAL_QUERIES = queries
     _GLOBAL_TARGETS = targets
     _GLOBAL_QUERY_STATS = query_stats
     _GLOBAL_TARGET_STATS = target_stats
+
+    _GLOBAL_ENGINE = engine
+    _GLOBAL_QUERIES_IG = queries_ig
+    _GLOBAL_TARGETS_IG = targets_ig
 
 def compute_graph_stats(G):
     """Compute graph statistics for filtering."""
@@ -128,6 +137,13 @@ def arg_parse():
     parser.add_argument('--use_sampling', action="store_true", help='Use node sampling for very large graphs')
     parser.add_argument('--graph_type', type=str, default='auto', choices=['directed', 'undirected', 'auto'],
                        help='Graph type: directed, undirected, or auto-detect')
+    parser.add_argument(
+        '--engine',
+        type=str,
+        default='nx',
+        choices=['nx', 'igraph'],
+        help='Matching engine: NetworkX (nx) or igraph backend.'
+    )
     parser.set_defaults(dataset="test_100n_200e.pkl",
                        queries_path="patterns_test.pkl",
                        out_path="counts.json",
@@ -180,25 +196,11 @@ def load_networkx_graph(filepath, directed=None):
                 
         return graph
 
-def count_graphlets_helper(inp):
-    q_idx, t_idx, method, node_anchored, anchor_or_none, timeout = inp
-
-    query = _GLOBAL_QUERIES[q_idx]
-    target = _GLOBAL_TARGETS[t_idx]
-    query_stats = _GLOBAL_QUERY_STATS[q_idx]
-    target_stats = _GLOBAL_TARGET_STATS[t_idx]
-
-    start_time = time.time()
-
-    if not can_be_isomorphic(query_stats, target_stats):
-        return q_idx, 0
-
-    query = query.copy()
-    query.remove_edges_from(nx.selfloop_edges(query))
-    target = target.copy()
-    target.remove_edges_from(nx.selfloop_edges(target))
-
+def match_task_nx(query, target, method, node_anchored,
+                  anchor_or_none, timeout, q_idx, start_time):
+    """NetworkX-based matching for a single (query, target, anchor) task."""
     count = 0
+
     try:
         if method == "freq":
             if query.is_directed():
@@ -212,36 +214,40 @@ def count_graphlets_helper(inp):
                 nx.set_node_attributes(target, 0, name="anchor")
                 if anchor_or_none in target:
                     target.nodes[anchor_or_none]["anchor"] = 1
-                
+
                 if target.is_directed():
-                    matcher = iso.DiGraphMatcher(target, query,
-                        node_match=iso.categorical_node_match(["anchor"], [0]))
+                    matcher = iso.DiGraphMatcher(
+                        target, query,
+                        node_match=iso.categorical_node_match(["anchor"], [0])
+                    )
                 else:
-                    matcher = iso.GraphMatcher(target, query,
-                        node_match=iso.categorical_node_match(["anchor"], [0]))
-                
+                    matcher = iso.GraphMatcher(
+                        target, query,
+                        node_match=iso.categorical_node_match(["anchor"], [0])
+                    )
+
                 if time.time() - start_time > timeout:
                     print(f"Timeout on query {q_idx} before isomorphism check")
-                    return q_idx, 0
-                
+                    return 0
+
                 count = int(matcher.subgraph_is_isomorphic())
             else:
                 if target.is_directed():
                     matcher = iso.DiGraphMatcher(target, query)
                 else:
                     matcher = iso.GraphMatcher(target, query)
-                
+
                 if time.time() - start_time > timeout:
                     print(f"Timeout on query {q_idx} before isomorphism check")
-                    return q_idx, 0
-                
+                    return 0
+
                 count = int(matcher.subgraph_is_isomorphic())
         elif method == "freq":
             if target.is_directed():
                 matcher = iso.DiGraphMatcher(target, query)
             else:
                 matcher = iso.GraphMatcher(target, query)
-            
+
             count = 0
             for _ in matcher.subgraph_isomorphisms_iter():
                 if time.time() - start_time > timeout:
@@ -250,7 +256,7 @@ def count_graphlets_helper(inp):
                 count += 1
                 if count >= MAX_MATCHES_PER_QUERY:
                     break
-            
+
             if method == "freq" and n_symmetries > 0:
                 count = count / n_symmetries
 
@@ -260,11 +266,77 @@ def count_graphlets_helper(inp):
     except Exception as e:
         print(f"Error processing query {q_idx}: {str(e)}")
         count = 0
-        
+
+    return count
+
+def match_task_igraph(query_ig, target_ig, method, node_anchored,
+                      anchor_or_none, timeout, q_idx, start_time):
+    """Placeholder for future igraph-based matching backend."""
+    raise NotImplementedError("igraph engine not implemented yet; use --engine=nx")
+
+def run_match_task(engine,
+                   query, target,
+                   query_ig, target_ig,
+                   method, node_anchored,
+                   anchor_or_none, timeout,
+                   q_idx, start_time):
+    """Dispatch a single matching task to the selected backend."""
+    if engine == "nx":
+        return match_task_nx(
+            query, target, method, node_anchored,
+            anchor_or_none, timeout, q_idx, start_time
+        )
+    elif engine == "igraph":
+        return match_task_igraph(
+            query_ig, target_ig, method, node_anchored,
+            anchor_or_none, timeout, q_idx, start_time
+        )
+    else:
+        raise ValueError(f"Unknown engine: {engine}")
+
+def count_graphlets_helper(inp):
+    q_idx, t_idx, method, node_anchored, anchor_or_none, timeout = inp
+
+    query = _GLOBAL_QUERIES[q_idx]
+    target = _GLOBAL_TARGETS[t_idx]
+    query_stats = _GLOBAL_QUERY_STATS[q_idx]
+    target_stats = _GLOBAL_TARGET_STATS[t_idx]
+    engine = _GLOBAL_ENGINE
+
+    query_ig = None
+    target_ig = None
+    if engine == "igraph":
+        query_ig = _GLOBAL_QUERIES_IG[q_idx]
+        target_ig = _GLOBAL_TARGETS_IG[t_idx]
+
+    start_time = time.time()
+
+    if not can_be_isomorphic(query_stats, target_stats):
+        return q_idx, 0
+
+    query = query.copy()
+    query.remove_edges_from(nx.selfloop_edges(query))
+    target = target.copy()
+    target.remove_edges_from(nx.selfloop_edges(target))
+
+    count = run_match_task(
+        engine=engine,
+        query=query,
+        target=target,
+        query_ig=query_ig,
+        target_ig=target_ig,
+        method=method,
+        node_anchored=node_anchored,
+        anchor_or_none=anchor_or_none,
+        timeout=timeout,
+        q_idx=q_idx,
+        start_time=start_time,
+    )
+
     processing_time = time.time() - start_time
-    if processing_time > 10: 
+    if processing_time > 10:
         print(f"Query {q_idx} processed in {processing_time:.2f} seconds with count {count}")
-        
+
     return q_idx, count
 
 def save_checkpoint(n_matches, checkpoint_file):
@@ -345,6 +417,15 @@ def count_graphlets(queries, targets, args):
     query_stats = [compute_graph_stats(q) for q in queries]
     target_stats = [compute_graph_stats(t) for t in targets]
 
+    engine = args.engine
+
+    # For now, igraph graphs are placeholders; real conversion will come later.
+    queries_ig = None
+    targets_ig = None
+    if engine == "igraph":
+        queries_ig = [None] * len(queries)
+        targets_ig = [None] * len(targets)
+
     inp = []
     for qi, q in enumerate(queries):
         if q.number_of_nodes() > args.max_query_size:
@@ -382,7 +463,11 @@ def count_graphlets(queries, targets, args):
     n_done = 0
     last_checkpoint = time.time()
    
-    with Pool(processes=args.n_workers, initializer=_init_worker, initargs=(queries, targets, query_stats, target_stats)) as pool:
+    with Pool(
+        processes=args.n_workers,
+        initializer=_init_worker,
+        initargs=(queries, targets, query_stats, target_stats, queries_ig, targets_ig, engine),
+    ) as pool:
         for batch_start in range(0, len(inp), args.batch_size):
             batch_end = min(batch_start + args.batch_size, len(inp))
             batch = inp[batch_start:batch_end]
