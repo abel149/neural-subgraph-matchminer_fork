@@ -11,8 +11,6 @@ RUN apt-get update && apt-get install -y \
     && apt-get update \
     && apt-get install -y \
     python3.7 \
-    python3.7-dev \
-    python3.7-distutils \
     build-essential \
     pkg-config \
     git \
