@@ -226,6 +226,80 @@ def nx_to_igraph(G):
             g.es[eid][attr] = val
 
     return g
+
+def match_task_nx(query, target, method, node_anchored,
+                  anchor_or_none, timeout, q_idx, start_time):
+    """NetworkX-based matching for a single (query, target, anchor) task."""
+    count = 0
+
+    try:
+        if method == "freq":
+            if query.is_directed():
+                ismags = nx.isomorphism.DiGraphMatcher(query, query)
+            else:
+                ismags = nx.isomorphism.ISMAGS(query, query)
+            n_symmetries = len(list(ismags.isomorphisms_iter(symmetry=False)))
+
+        if method == "bin":
+            if node_anchored:
+                nx.set_node_attributes(target, 0, name="anchor")
+                if anchor_or_none in target:
+                    target.nodes[anchor_or_none]["anchor"] = 1
+
+                if target.is_directed():
+                    matcher = iso.DiGraphMatcher(
+                        target, query,
+                        node_match=iso.categorical_node_match(["anchor"], [0])
+                    )
+                else:
+                    matcher = iso.GraphMatcher(
+                        target, query,
+                        node_match=iso.categorical_node_match(["anchor"], [0])
+                    )
+
+                if time.time() - start_time > timeout:
+                    print(f"Timeout on query {q_idx} before isomorphism check")
+                    return 0
+
+                count = int(matcher.subgraph_is_isomorphic())
+            else:
+                if target.is_directed():
+                    matcher = iso.DiGraphMatcher(target, query)
+                else:
+                    matcher = iso.GraphMatcher(target, query)
+
+                if time.time() - start_time > timeout:
+                    print(f"Timeout on query {q_idx} before isomorphism check")
+                    return 0
+
+                count = int(matcher.subgraph_is_isomorphic())
+        elif method == "freq":
+            if target.is_directed():
+                matcher = iso.DiGraphMatcher(target, query)
+            else:
+                matcher = iso.GraphMatcher(target, query)
+
+            count = 0
+            for _ in matcher.subgraph_isomorphisms_iter():
+                if time.time() - start_time > timeout:
+                    print(f"Timeout during isomorphism iteration for query {q_idx}")
+                    break
+                count += 1
+                if count >= MAX_MATCHES_PER_QUERY:
+                    break
+
+            if method == "freq" and n_symmetries > 0:
+                count = count / n_symmetries
+
+    except TimeoutError as e:
+        print(f"Task {q_idx} timed out: {str(e)}")
+        count = 0
+    except Exception as e:
+        print(f"Error processing query {q_idx}: {str(e)}")
+        count = 0
+
+    return count
+
 def count_graphlets_helper(inp):
     i, query, target, method, node_anchored, anchor_or_none, timeout = inp
     
