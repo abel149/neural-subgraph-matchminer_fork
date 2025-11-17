@@ -1,5 +1,3 @@
-import argparse
-import csv
 import time
 import os
 import json
@@ -19,12 +17,6 @@ import torch_geometric.utils as pyg_utils
 
 import torch_geometric.nn as pyg_nn
 from matplotlib import cm
-
-from common import data
-from common import models
-from common import utils
-from subgraph_mining import decoder
-
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
@@ -47,6 +39,32 @@ MAX_SEARCH_TIME = 1800
 MAX_MATCHES_PER_QUERY = 10000
 DEFAULT_SAMPLE_ANCHORS = 1000
 CHECKPOINT_INTERVAL = 100  
+
+# Global caches for worker processes
+_GLOBAL_QUERIES = None
+_GLOBAL_TARGETS = None
+_GLOBAL_QUERY_STATS = None
+_GLOBAL_TARGET_STATS = None
+
+_GLOBAL_ENGINE = None
+_GLOBAL_QUERIES_IG = None
+_GLOBAL_TARGETS_IG = None
+
+def _init_worker(queries, targets, query_stats, target_stats,
+                 queries_ig, targets_ig, engine):
+    """Initializer for worker processes: set global references."""
+    global _GLOBAL_QUERIES, _GLOBAL_TARGETS
+    global _GLOBAL_QUERY_STATS, _GLOBAL_TARGET_STATS
+    global _GLOBAL_ENGINE, _GLOBAL_QUERIES_IG, _GLOBAL_TARGETS_IG
+
+    _GLOBAL_QUERIES = queries
+    _GLOBAL_TARGETS = targets
+    _GLOBAL_QUERY_STATS = query_stats
+    _GLOBAL_TARGET_STATS = target_stats
+
+    _GLOBAL_ENGINE = engine
+    _GLOBAL_QUERIES_IG = queries_ig
+    _GLOBAL_TARGETS_IG = targets_ig
 
 def compute_graph_stats(G):
     """Compute graph statistics for filtering."""
