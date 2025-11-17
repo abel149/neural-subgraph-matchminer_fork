@@ -114,7 +114,7 @@ jobs:
               export PYTHONPATH=/app
               echo 'Running pattern counter...'
               python -m analyze.count_patterns \
-                --dataset=test_target_directed_100n.pkl \
+                --dataset=test_target_directed_small_portable.pkl \
                 --queries_path=results/patterns.pkl \
                 --out_path=results/ \
                 --node_anchored \
