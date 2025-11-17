@@ -8,6 +8,7 @@ ENV PYTHONUNBUFFERED=1
 # Install system build dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
+    libigraph-dev python3-igraph \
     pkg-config \
     git \
     libfreetype6-dev \
