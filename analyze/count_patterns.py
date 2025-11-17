@@ -195,6 +195,37 @@ def load_networkx_graph(filepath, directed=None):
                 
         return graph
 
+def nx_to_igraph(G):
+    """Convert a NetworkX graph to an igraph Graph, preserving node/edge attributes.
+
+    This is only used when --engine=igraph is requested. Importing igraph here
+    keeps the dependency optional for normal NetworkX runs.
+    """
+    try:
+        import igraph as ig
+    except ImportError as e:
+        raise ImportError("igraph is required for --engine=igraph but is not installed") from e
+
+    nodes = list(G.nodes())
+    nx_to_idx = {n: i for i, n in enumerate(nodes)}
+    directed = G.is_directed()
+
+    g = ig.Graph(directed=directed)
+    g.add_vertices(len(nodes))
+
+    for n, i in nx_to_idx.items():
+        # Preserve original NetworkX node id for later lookup (e.g., anchors)
+        g.vs[i]["nx_id"] = n
+        for attr, val in G.nodes[n].items():
+            g.vs[i][attr] = val
+
+    for u, v, attrs in G.edges(data=True):
+        g.add_edge(nx_to_idx[u], nx_to_idx[v])
+        eid = g.get_eid(nx_to_idx[u], nx_to_idx[v])
+        for attr, val in attrs.items():
+            g.es[eid][attr] = val
+
+    return g
 def count_graphlets_helper(inp):
     i, query, target, method, node_anchored, anchor_or_none, timeout = inp
     
