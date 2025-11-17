@@ -196,6 +196,38 @@ def load_networkx_graph(filepath, directed=None):
                 
         return graph
 
+def nx_to_igraph(G):
+    """Convert a NetworkX graph to an igraph Graph, preserving node/edge attributes.
+
+    This is only used when --engine=igraph is requested. Importing igraph here
+    keeps the dependency optional for normal NetworkX runs.
+    """
+    try:
+        import igraph as ig
+    except ImportError as e:
+        raise ImportError("igraph is required for --engine=igraph but is not installed") from e
+
+    nodes = list(G.nodes())
+    nx_to_idx = {n: i for i, n in enumerate(nodes)}
+    directed = G.is_directed()
+
+    g = ig.Graph(directed=directed)
+    g.add_vertices(len(nodes))
+
+    for n, i in nx_to_idx.items():
+        # Preserve original NetworkX node id for later lookup (e.g., anchors)
+        g.vs[i]["nx_id"] = n
+        for attr, val in G.nodes[n].items():
+            g.vs[i][attr] = val
+
+    for u, v, attrs in G.edges(data=True):
+        g.add_edge(nx_to_idx[u], nx_to_idx[v])
+        eid = g.get_eid(nx_to_idx[u], nx_to_idx[v])
+        for attr, val in attrs.items():
+            g.es[eid][attr] = val
+
+    return g
+
 def match_task_nx(query, target, method, node_anchored,
                   anchor_or_none, timeout, q_idx, start_time):
     """NetworkX-based matching for a single (query, target, anchor) task."""
@@ -271,8 +303,69 @@ def match_task_nx(query, target, method, node_anchored,
 
 def match_task_igraph(query_ig, target_ig, method, node_anchored,
                       anchor_or_none, timeout, q_idx, start_time):
-    """Placeholder for future igraph-based matching backend."""
-    raise NotImplementedError("igraph engine not implemented yet; use --engine=nx")
+    """igraph-based matching for a single (query, target, anchor) task.
+
+    Currently supports only method=="bin". For other methods, falls back to
+    NotImplementedError so behavior is explicit.
+    """
+    try:
+        import igraph as ig  # noqa: F401  # imported for side-effects / type
+    except ImportError as e:
+        raise ImportError("igraph is required for --engine=igraph but is not installed") from e
+
+    if method != "bin":
+        raise NotImplementedError("igraph backend currently supports only count_method='bin'")
+
+    # Non-anchored case: simple subgraph existence check
+    if not node_anchored:
+        mappings = target_ig.get_subisomorphisms_vf2(query_ig)
+        elapsed = time.time() - start_time
+        if elapsed > timeout:
+            print(f"[igraph] Timeout on query {q_idx} after VF2 ({elapsed:.2f}s)")
+            return 0
+        return int(len(mappings) > 0)
+
+    # Anchored case: enforce that the query's anchor node maps to the given target anchor
+    # We assume that query_ig vertices already carry an 'anchor' attribute
+    # consistent with the NetworkX version.
+
+    # Find target vertex index corresponding to anchor_or_none using stored nx_id
+    anchor_idx = None
+    for v in target_ig.vs:
+        if "nx_id" in v.attributes() and v["nx_id"] == anchor_or_none:
+            anchor_idx = v.index
+            break
+
+    if anchor_idx is None:
+        # Anchor not present in this target
+        return 0
+
+    # Prepare anchor attributes: 1 for anchor, 0 otherwise
+    # For target: only the chosen anchor vertex has anchor==1
+    anchor_vals_target = [0] * target_ig.vcount()
+    anchor_vals_target[anchor_idx] = 1
+
+    # For query: rely on any existing 'anchor' attribute, defaulting to 0
+    anchor_vals_query = []
+    for v in query_ig.vs:
+        val = v["anchor"] if "anchor" in v.attributes() else 0
+        anchor_vals_query.append(val)
+
+    # Run VF2 with color constraints based on anchor values.
+    # color1/color2 are lists of integers that must match between mapped vertices.
+    mappings = target_ig.get_subisomorphisms_vf2(
+        query_ig,
+        color1=anchor_vals_target,
+        color2=anchor_vals_query,
+    )
+
+    elapsed = time.time() - start_time
+    if elapsed > timeout:
+        print(f"[igraph] Timeout on query {q_idx} after VF2 ({elapsed:.2f}s)")
+        return 0
+
+    # Any valid mapping means at least one anchored match
+    return int(len(mappings) > 0)
 
 def run_match_task(engine,
                    query, target,
@@ -419,12 +512,11 @@ def count_graphlets(queries, targets, args):
 
     engine = args.engine
 
-    # For now, igraph graphs are placeholders; real conversion will come later.
     queries_ig = None
     targets_ig = None
     if engine == "igraph":
-        queries_ig = [None] * len(queries)
-        targets_ig = [None] * len(targets)
+        queries_ig = [nx_to_igraph(q) for q in queries]
+        targets_ig = [nx_to_igraph(t) for t in targets]
 
     inp = []
     for qi, q in enumerate(queries):
