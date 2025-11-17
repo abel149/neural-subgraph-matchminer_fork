@@ -119,7 +119,7 @@ jobs:
                 --out_path=results/ \
                 --node_anchored \
                 --graph_type=directed \
-                --engine=igraph
+                --engine=nx
               
               echo 'Counting completed.'
               ls -la /app/results
