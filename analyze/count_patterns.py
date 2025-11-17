@@ -508,22 +508,31 @@ def count_graphlets(queries, targets, args):
                 sampled_targets.append(target)
         targets = sampled_targets
         print(f"After sampling: {len(targets)} target graphs to process")
-    
-    with Pool(processes=args.n_workers) as pool:
-        target_stats = pool.map(compute_graph_stats, targets)
-        query_stats = pool.map(compute_graph_stats, queries)
-    
+
+    query_stats = [compute_graph_stats(q) for q in queries]
+    target_stats = [compute_graph_stats(t) for t in targets]
+
+    engine = args.engine
+
+    queries_ig = None
+    targets_ig = None
+    if engine == "igraph":
+        queries_ig = [nx_to_igraph(q) for q in queries]
+        targets_ig = [nx_to_igraph(t) for t in targets]
+
     inp = []
-    for i, (query, q_stats) in enumerate(zip(queries, query_stats)):
-        if query.number_of_nodes() > args.max_query_size:
-            print(f"Skipping query {i}: exceeds max size {args.max_query_size}")
+    for qi, q in enumerate(queries):
+        if q.number_of_nodes() > args.max_query_size:
+            print(f"Skipping query {qi}: exceeds max size {args.max_query_size}")
             continue
-            
-        for t_idx, (target, t_stats) in enumerate(zip(targets, target_stats)):
+        q_stats = query_stats[qi]
+
+        for ti, t in enumerate(targets):
+            t_stats = target_stats[ti]
             if not can_be_isomorphic(q_stats, t_stats):
                 continue
             
-            task_id = f"{i}_{t_idx}"
+            task_id = f"{qi}_{ti}"
             
             if task_id in problematic_tasks:
                 print(f"Skipping known problematic task {task_id}")
@@ -534,23 +543,25 @@ def count_graphlets(queries, targets, args):
                 continue
                 
             if args.node_anchored:
-                if target.number_of_nodes() > args.sample_anchors:
-                    anchors = random.sample(list(target.nodes), args.sample_anchors)
+                if t.number_of_nodes() > args.sample_anchors:
+                    anchors = random.sample(list(t.nodes), args.sample_anchors)
                 else:
-                    anchors = list(target.nodes)
+                    anchors = list(t.nodes)
                     
                 for anchor in anchors:
-                    inp.append((i, query, target, args.count_method, args.node_anchored, anchor, 
-                             args.timeout))
+                    inp.append((qi, ti, args.count_method, args.node_anchored, anchor, args.timeout))
             else:
-                inp.append((i, query, target, args.count_method, args.node_anchored, None, 
-                         args.timeout))
+                inp.append((qi, ti, args.count_method, args.node_anchored, None, args.timeout))
     
     print(f"Generated {len(inp)} tasks after filtering")
     n_done = 0
     last_checkpoint = time.time()
    
-    with Pool(processes=args.n_workers) as pool:
+    with Pool(
+        processes=args.n_workers,
+        initializer=_init_worker,
+        initargs=(queries, targets, query_stats, target_stats, queries_ig, targets_ig, engine),
+    ) as pool:
         for batch_start in range(0, len(inp), args.batch_size):
             batch_end = min(batch_start + args.batch_size, len(inp))
             batch = inp[batch_start:batch_end]
