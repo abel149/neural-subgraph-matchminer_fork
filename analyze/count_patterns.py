@@ -135,13 +135,22 @@ def arg_parse():
     parser.add_argument('--use_sampling', action="store_true", help='Use node sampling for very large graphs')
     parser.add_argument('--graph_type', type=str, default='auto', choices=['directed', 'undirected', 'auto'],
                        help='Graph type: directed, undirected, or auto-detect')
+    parser.add_argument(
+        '--engine',
+        type=str,
+        default='nx',
+        choices=['nx', 'igraph'],
+        help='Matching engine: NetworkX (nx) or igraph backend.'
+    )
     parser.set_defaults(dataset="enzymes",
                        queries_path="results/out-patterns.p",
                        out_path="results/counts.json",
                        n_workers=4,
                        count_method="bin",
-                       baseline="none")
+                       baseline="none",
+                       node_anchored=True)
     return parser.parse_args()
+
 
 def load_networkx_graph(filepath, directed=None):
     """Load a Networkx graph from pickle format with proper attributes handling.
