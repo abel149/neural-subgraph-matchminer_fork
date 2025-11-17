@@ -5,6 +5,7 @@ ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y \
     software-properties-common \
+    libigraph-dev python3-igraph \
     curl \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update \
@@ -38,6 +39,8 @@ WORKDIR /app
 COPY requirements.txt .
 
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
+RUN python -m pip install --no-cache-dir igraph
 
 RUN pip install --no-cache-dir numpy==1.21.6
 
