@@ -611,10 +611,18 @@ def main():
         query_lens = [len(q) for q in baseline_queries]
         n_matches = count_graphlets(baseline_queries, targets, args)
             
-    with open(args.out_path, "w") as f:
-        json.dump((query_lens, n_matches, []), f)
-    print(f"Results saved to {args.out_path}")
-
+    # Save results
+    query_lens = [q.number_of_nodes() for q in queries]
+    output_file = os.path.join(args.out_path, "counts.json")
+    
+    # Ensure output directory exists
+    os.makedirs(args.out_path, exist_ok=True)
+    
+    with open(output_file, "w") as f:
+        json.dump({"query_lengths": query_lens, "counts": n_matches, "metadata": {}}, f)
+    
+    print(f"Results saved to {output_file}")
+    print("=== Completed ===")
 
 
 if __name__ == "__main__":
