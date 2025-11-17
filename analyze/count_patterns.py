@@ -301,6 +301,7 @@ def match_task_nx(query, target, method, node_anchored,
 
     return count
 
+
 def match_task_igraph(query_ig, target_ig, method, node_anchored,
                       anchor_or_none, timeout, q_idx, start_time):
     """igraph-based matching for a single (query, target, anchor) task.
@@ -316,14 +317,15 @@ def match_task_igraph(query_ig, target_ig, method, node_anchored,
     if method != "bin":
         raise NotImplementedError("igraph backend currently supports only count_method='bin'")
 
-    # Non-anchored case: simple subgraph existence check
+    # Non-anchored case: simple subgraph existence check.
+    # Use subisomorphic_vf2 to avoid enumerating all mappings.
     if not node_anchored:
-        mappings = target_ig.get_subisomorphisms_vf2(query_ig)
+        is_subiso = target_ig.subisomorphic_vf2(query_ig)
         elapsed = time.time() - start_time
         if elapsed > timeout:
             print(f"[igraph] Timeout on query {q_idx} after VF2 ({elapsed:.2f}s)")
             return 0
-        return int(len(mappings) > 0)
+        return int(bool(is_subiso))
 
     # Anchored case: enforce that the query's anchor node maps to the given target anchor
     # We assume that query_ig vertices already carry an 'anchor' attribute
@@ -353,7 +355,7 @@ def match_task_igraph(query_ig, target_ig, method, node_anchored,
 
     # Run VF2 with color constraints based on anchor values.
     # color1/color2 are lists of integers that must match between mapped vertices.
-    mappings = target_ig.get_subisomorphisms_vf2(
+    is_subiso = target_ig.subisomorphic_vf2(
         query_ig,
         color1=anchor_vals_target,
         color2=anchor_vals_query,
@@ -365,7 +367,8 @@ def match_task_igraph(query_ig, target_ig, method, node_anchored,
         return 0
 
     # Any valid mapping means at least one anchored match
-    return int(len(mappings) > 0)
+    return int(bool(is_subiso))
+
 
 def run_match_task(engine,
                    query, target,
@@ -386,6 +389,7 @@ def run_match_task(engine,
         )
     else:
         raise ValueError(f"Unknown engine: {engine}")
+
 
 def count_graphlets_helper(inp):
     q_idx, t_idx, method, node_anchored, anchor_or_none, timeout = inp
