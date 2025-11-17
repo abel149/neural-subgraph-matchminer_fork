@@ -29,6 +29,8 @@ COPY requirements.txt .
 # Upgrade pip/setuptools/wheel
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
+RUN pip install --no-cache-dir igraph
+
 # Core numeric stack
 RUN pip install --no-cache-dir numpy==1.21.6
 
