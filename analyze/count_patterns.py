@@ -390,99 +390,49 @@ def run_match_task(engine,
         raise ValueError(f"Unknown engine: {engine}")
 
 def count_graphlets_helper(inp):
-    i, query, target, method, node_anchored, anchor_or_none, timeout = inp
-    
+    q_idx, t_idx, method, node_anchored, anchor_or_none, timeout = inp
+
+    query = _GLOBAL_QUERIES[q_idx]
+    target = _GLOBAL_TARGETS[t_idx]
+    query_stats = _GLOBAL_QUERY_STATS[q_idx]
+    target_stats = _GLOBAL_TARGET_STATS[t_idx]
+    engine = _GLOBAL_ENGINE
+
+    query_ig = None
+    target_ig = None
+    if engine == "igraph":
+        query_ig = _GLOBAL_QUERIES_IG[q_idx]
+        target_ig = _GLOBAL_TARGETS_IG[t_idx]
+
     start_time = time.time()
-    
-    effective_timeout = min(timeout, 600)  
-    
-    query_stats = compute_graph_stats(query)
-    target_stats = compute_graph_stats(target)
+
     if not can_be_isomorphic(query_stats, target_stats):
-        return i, 0
-    
+        return q_idx, 0
+
     query = query.copy()
     query.remove_edges_from(nx.selfloop_edges(query))
     target = target.copy()
     target.remove_edges_from(nx.selfloop_edges(target))
 
-    count = 0
-    try:
-        import signal
-        
-        def timeout_handler(signum, frame):
-            raise TimeoutError(f"Task {i} timed out after {effective_timeout} seconds")
-            
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(effective_timeout)
-        
-        if method == "freq":
-            if query.is_directed():
-                ismags = nx.isomorphism.DiGraphMatcher(query, query)
-            else:
-                ismags = nx.isomorphism.ISMAGS(query, query)
-            n_symmetries = len(list(ismags.isomorphisms_iter(symmetry=False)))
-        
-        if method == "bin":
-            if node_anchored:
-                nx.set_node_attributes(target, 0, name="anchor")
-                target.nodes[anchor_or_none]["anchor"] = 1
-                
-                if target.is_directed():
-                    matcher = iso.DiGraphMatcher(target, query,
-                        node_match=iso.categorical_node_match(["anchor"], [0]))
-                else:
-                    matcher = iso.GraphMatcher(target, query,
-                        node_match=iso.categorical_node_match(["anchor"], [0]))
-                
-                if time.time() - start_time > timeout:
-                    print(f"Timeout on query {i} before isomorphism check")
-                    return i, 0
-                
-                count = int(matcher.subgraph_is_isomorphic())
-            else:
-                if target.is_directed():
-                    matcher = iso.DiGraphMatcher(target, query)
-                else:
-                    matcher = iso.GraphMatcher(target, query)
-                
-                if time.time() - start_time > timeout:
-                    print(f"Timeout on query {i} before isomorphism check")
-                    return i, 0
-                
-                count = int(matcher.subgraph_is_isomorphic())
-        elif method == "freq":
-            if target.is_directed():
-                matcher = iso.DiGraphMatcher(target, query)
-            else:
-                matcher = iso.GraphMatcher(target, query)
-            
-            count = 0
-            for _ in matcher.subgraph_isomorphisms_iter():
-                if time.time() - start_time > timeout:
-                    print(f"Timeout during isomorphism iteration for query {i}")
-                    break
-                count += 1
-                if count >= MAX_MATCHES_PER_QUERY:
-                    break
-            
-            if method == "freq" and n_symmetries > 0:
-                count = count / n_symmetries
-        
-        signal.alarm(0)
-            
-    except TimeoutError as e:
-        print(f"Task {i} timed out: {str(e)}")
-        count = 0
-    except Exception as e:
-        print(f"Error processing query {i}: {str(e)}")
-        count = 0
-        
+    count = run_match_task(
+        engine=engine,
+        query=query,
+        target=target,
+        query_ig=query_ig,
+        target_ig=target_ig,
+        method=method,
+        node_anchored=node_anchored,
+        anchor_or_none=anchor_or_none,
+        timeout=timeout,
+        q_idx=q_idx,
+        start_time=start_time,
+    )
+
     processing_time = time.time() - start_time
-    if processing_time > 10: 
-        print(f"Query {i} processed in {processing_time:.2f} seconds with count {count}")
-        
-    return i, count
+    if processing_time > 10:
+        print(f"Query {q_idx} processed in {processing_time:.2f} seconds with count {count}")
+
+    return q_idx, count
 
 def save_checkpoint(n_matches, checkpoint_file):
     with open(checkpoint_file, 'w') as f:
