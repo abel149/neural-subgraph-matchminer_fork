@@ -368,6 +368,27 @@ def match_task_igraph(query_ig, target_ig, method, node_anchored,
     # Any valid mapping means at least one anchored match
     return int(bool(is_subiso))
 
+
+def run_match_task(engine,
+                   query, target,
+                   query_ig, target_ig,
+                   method, node_anchored,
+                   anchor_or_none, timeout,
+                   q_idx, start_time):
+    """Dispatch a single matching task to the selected backend."""
+    if engine == "nx":
+        return match_task_nx(
+            query, target, method, node_anchored,
+            anchor_or_none, timeout, q_idx, start_time
+        )
+    elif engine == "igraph":
+        return match_task_igraph(
+            query_ig, target_ig, method, node_anchored,
+            anchor_or_none, timeout, q_idx, start_time
+        )
+    else:
+        raise ValueError(f"Unknown engine: {engine}")
+
 def count_graphlets_helper(inp):
     i, query, target, method, node_anchored, anchor_or_none, timeout = inp
     
