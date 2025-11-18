@@ -118,7 +118,7 @@ jobs:
                 --queries_path=results/patterns.pkl \
                 --out_path=results/ \
                 --node_anchored \
-            
+                --engine=igraph
               
               echo 'Counting completed.'
               ls -la /app/results
