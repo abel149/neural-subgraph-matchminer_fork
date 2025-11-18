@@ -1,17 +1,14 @@
-FROM ubuntu:20.04
+# Use an official Python 3.7 base image (Debian-based)
+FROM python:3.7-slim
 
+# Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
+# Install system build dependencies
 RUN apt-get update && apt-get install -y \
-    software-properties-common \
-    libigraph-dev python3-igraph \
-    curl \
-    python3 \
-    python3-pip \
-    python3-dev \
-    python3-distutils \
     build-essential \
+    libigraph-dev python3-igraph \
     pkg-config \
     git \
     libfreetype6-dev \
@@ -24,25 +21,28 @@ RUN apt-get update && apt-get install -y \
     python3-scipy \
     && rm -rf /var/lib/apt/lists/*
 
-
-
-RUN ln -sf /usr/bin/python3 /usr/bin/python \
-    && ln -sf /usr/bin/pip3 /usr/bin/pip
-
 WORKDIR /app
 
+# Copy dependency file first to leverage Docker cache
 COPY requirements.txt .
 
-RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+# Upgrade pip/setuptools/wheel
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-RUN python -m pip install --no-cache-dir igraph
+RUN pip install --no-cache-dir igraph
 
+# Core numeric stack
+RUN pip install --no-cache-dir numpy==1.21.6
+
+# Visualization and ML libs
 RUN pip install --no-cache-dir \
     matplotlib==2.1.1 \
     scikit-learn==1.0.2 \
     seaborn==0.9.0
 
-RUN pip install torch==1.4.0+cpu torchvision==0.5.0+cpu -f https://download.pytorch.org/whl/torch_stable.html
+# Torch + PyG ecosystem (CPU-only)
+RUN pip install torch==1.4.0+cpu torchvision==0.5.0+cpu \
+    -f https://download.pytorch.org/whl/torch_stable.html
 
 RUN pip install --no-cache-dir \
     torch-scatter==2.0.2 \
@@ -52,12 +52,13 @@ RUN pip install --no-cache-dir \
     torch-geometric==1.4.3 \
     --find-links https://data.pyg.org/whl/torch-1.4.0+cpu.html
 
+# Other utilities
 RUN pip install --no-cache-dir \
     deepsnap==0.1.2 \
     networkx==2.4 \
     test-tube==0.7.5 \
     tqdm==4.43.0
 
-RUN pip install --no-cache-dir numpy==1.21.6
-
+# Copy the project
 COPY . .
+
