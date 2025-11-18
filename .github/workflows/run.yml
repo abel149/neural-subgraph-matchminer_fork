@@ -99,7 +99,6 @@ jobs:
               ls -la /app/plots/cluster
               ls -la /app/results
               "
-
       - name: Run pattern counter in Docker container
         run: |
           docker run --rm \
@@ -120,7 +119,6 @@ jobs:
               echo 'Counting completed.'
               ls -la /app/results
             "
-
       # - name: Run matcher in Docker container
       #  run: |
       #   docker run --rm \
