@@ -1,3 +1,5 @@
+import argparse
+import csv
 import time
 import os
 import json
@@ -142,15 +144,14 @@ def arg_parse():
         choices=['nx', 'igraph'],
         help='Matching engine: NetworkX (nx) or igraph backend.'
     )
-    parser.set_defaults(dataset="enzymes",
-                       queries_path="results/out-patterns.p",
-                       out_path="results/counts.json",
+    parser.set_defaults(dataset="test_100n_200e.pkl",
+                       queries_path="patterns_test.pkl",
+                       out_path="counts.json",
                        n_workers=4,
                        count_method="bin",
                        baseline="none",
                        node_anchored=True)
     return parser.parse_args()
-
 
 def load_networkx_graph(filepath, directed=None):
     """Load a Networkx graph from pickle format with proper attributes handling.
@@ -388,6 +389,7 @@ def run_match_task(engine,
         )
     else:
         raise ValueError(f"Unknown engine: {engine}")
+
 
 def count_graphlets_helper(inp):
     q_idx, t_idx, method, node_anchored, anchor_or_none, timeout = inp
