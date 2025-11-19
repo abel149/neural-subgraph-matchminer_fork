@@ -146,7 +146,7 @@ def arg_parse():
     )
     parser.set_defaults(dataset="test_100n_200e.pkl",
                        queries_path="patterns_test.pkl",
-                       out_path="counts.json",
+                       out_path="results",
                        n_workers=4,
                        count_method="bin",
                        baseline="none",
@@ -800,16 +800,19 @@ def main():
     total_time = time.time() - overall_start
     print(f"Total counting time: {total_time:.2f} seconds")
     # ---- end timing ----    
-    # Save results
+    # Save results in a format compatible with analyze_pattern_counts.py
+    # Format: [query_lengths, counts, baseline_counts]
     query_lens = [q.number_of_nodes() for q in queries]
-    output_file = os.path.join(args.out_path, "counts.json")
-    
-    # Ensure output directory exists
+    baseline_counts = [0.0 for _ in n_matches]
+
+    # Use dataset filename (without extension) as the JSON name
+    dataset_name = os.path.splitext(os.path.basename(args.dataset))[0]
     os.makedirs(args.out_path, exist_ok=True)
-    
+    output_file = os.path.join(args.out_path, f"{dataset_name}.json")
+
     with open(output_file, "w") as f:
-        json.dump({"query_lengths": query_lens, "counts": n_matches, "metadata": {}}, f)
-    
+        json.dump([query_lens, n_matches, baseline_counts], f)
+
     print(f"Results saved to {output_file}")
     print("=== Completed ===")
 
