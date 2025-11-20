@@ -603,7 +603,7 @@ def pattern_growth(dataset, task, args):
 
     print(f"Successfully visualized {successful_visualizations}/{len(out_graphs)} patterns")
 
-    # Save results
+    
     if not os.path.exists("results"):
         os.makedirs("results")
     with open(args.out_path, "wb") as f:
@@ -640,7 +640,13 @@ def pattern_growth(dataset, task, args):
         json_results.append(pattern_data)  
     
     
-    json_path = args.out_path.replace('.p', '.json').replace('.pkl', '.json')  
+    base_path = os.path.splitext(args.out_path)[0]  
+    if base_path.endswith('.json'):  
+        base_path = os.path.splitext(base_path)[0]  
+      
+    json_path = base_path + '.json'
+
+    
     with open(json_path, 'w') as f:  
         json.dump(json_results, f, indent=2)
         
