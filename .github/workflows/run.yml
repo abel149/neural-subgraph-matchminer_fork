@@ -112,7 +112,7 @@ jobs:
               python -m analyze.count_patterns \
                 --dataset=metta.pkl \
                 --queries_path=results/patterns.pkl \
-                --out_path=results/ \
+                --out_path=results/counts.json \
                 --node_anchored \
                 --engine=igraph
               
