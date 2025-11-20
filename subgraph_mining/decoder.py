@@ -45,6 +45,7 @@ import networkx as nx
 import pickle
 import torch.multiprocessing as mp
 from sklearn.decomposition import PCA
+import json 
 
 import warnings 
 
@@ -608,6 +609,41 @@ def pattern_growth(dataset, task, args):
     with open(args.out_path, "wb") as f:
         pickle.dump(out_graphs, f)
     
+    json_results = []  
+    for pattern in out_graphs:  
+        pattern_data = {  
+            'nodes': [  
+                {  
+                    'id': str(node),  
+                    'label': pattern.nodes[node].get('label', ''),  
+                    'anchor': pattern.nodes[node].get('anchor', 0),  
+                    **{k: v for k, v in pattern.nodes[node].items()   
+                    if k not in ['label', 'anchor']}  
+                }  
+                for node in pattern.nodes()  
+            ],  
+            'edges': [  
+                {  
+                    'source': str(u),  
+                    'target': str(v),  
+                    'type': data.get('type', ''),  
+                    **{k: v for k, v in data.items() if k != 'type'}  
+                }  
+                for u, v, data in pattern.edges(data=True)  
+            ],  
+            'metadata': {  
+                'num_nodes': len(pattern),  
+                'num_edges': pattern.number_of_edges(),  
+                'is_directed': pattern.is_directed()  
+            }  
+        }  
+        json_results.append(pattern_data)  
+    
+    
+    json_path = args.out_path.replace('.p', '.json').replace('.pkl', '.json')  
+    with open(json_path, 'w') as f:  
+        json.dump(json_results, f, indent=2)
+        
     return out_graphs
 
 def main():
