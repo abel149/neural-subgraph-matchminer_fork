@@ -800,22 +800,9 @@ def main():
     total_time = time.time() - overall_start
     print(f"Total counting time: {total_time:.2f} seconds")
     # ---- end timing ----    
-    # Save results in a format compatible with analyze_pattern_counts.py
-    # Format: [query_lengths, counts, baseline_counts]
-    query_lens = [q.number_of_nodes() for q in queries]
-    baseline_counts = [0.0 for _ in n_matches]
-
-    # Use dataset filename (without extension) as the JSON name
-    dataset_name = os.path.splitext(os.path.basename(args.dataset))[0]
-    os.makedirs(args.out_path, exist_ok=True)
-    output_file = os.path.join(args.out_path, f"{dataset_name}.json")
-
-    with open(output_file, "w") as f:
-        json.dump([query_lens, n_matches, baseline_counts], f)
-
-    print(f"Results saved to {output_file}")
-    print("=== Completed ===")
-
+    with open(args.out_path, "w") as f:
+        json.dump((query_lens, n_matches, []), f)
+    print(f"Results saved to {args.out_path}")
 
 
 if __name__ == "__main__":
