@@ -637,9 +637,8 @@ def pattern_growth(dataset, task, args):
                 'is_directed': pattern.is_directed()  
             }  
         }  
-        json_results.append(pattern_data)  
-    
-    
+        json_results.append(pattern_data) 
+         
     base_path = os.path.splitext(args.out_path)[0]  
     if base_path.endswith('.json'):  
         base_path = os.path.splitext(base_path)[0]  
