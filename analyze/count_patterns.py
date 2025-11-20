@@ -144,9 +144,9 @@ def arg_parse():
         choices=['nx', 'igraph'],
         help='Matching engine: NetworkX (nx) or igraph backend.'
     )
-    parser.set_defaults(dataset="test_100n_200e.pkl",
-                       queries_path="patterns_test.pkl",
-                       out_path="results",
+    parser.set_defaults(dataset="enzymes",
+                       queries_path="results/out-patterns.p",
+                       out_path="results/counts.json",
                        n_workers=4,
                        count_method="bin",
                        baseline="none",
