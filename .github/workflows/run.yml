@@ -55,28 +55,6 @@ jobs:
           echo "Percent of processors used: ${PERCENT_USED}%"
           echo "total_cpus=$TOTAL_CPUS" >> $GITHUB_OUTPUT
           echo "percent_used=$PERCENT_USED" >> $GITHUB_OUTPUT
-      #Download Amazon dataset from GitHub Release
-      - name: Fetch data.pkl from GitHub Release
-        run: |
-          echo " Downloading data.pkl from GitHub Releases..."
-          wget -O data.pkl https://github.com/abel149/neural-subgraph-matchminer_fork/releases/download/v1.1/data.pkl
-
-          echo " Verifying downloaded file..."
-          file data.pkl
-
-          FILE_SIZE=$(stat -c%s data.pkl)
-          echo "File size: $FILE_SIZE bytes"
-
-          if [ $FILE_SIZE -lt 100000 ]; then
-            echo " ERROR: data.pkl is too small. Likely not downloaded correctly!"
-            exit 1
-          fi
-
-          if file data.pkl | grep -Eq "HTML|ASCII|Unicode"; then
-            echo " ERROR: data.pkl is not a valid binary file!"
-            exit 1
-          fi
-          echo " data.pkl verified as binary."
 
       - name: Run decoder in Docker container
         run: |
@@ -99,32 +77,25 @@ jobs:
               ls -la /app/plots/cluster
               ls -la /app/results
               "
-      - name: Run pattern counter in Docker container
-        run: |
-          docker run --rm \
-            -v ${{ github.workspace }}:/app \
-            -e PYTHONUNBUFFERED=1 \
-            decoder-image:latest \
-            bash -c "
-              set -e
-              export PYTHONPATH=/app
-              echo 'Running optimized pattern counter...'
-              python -m analyze.count_patterns \
-                --dataset=directed.pkl \
-                --queries_path=results/patterns.pkl \
-                --out_path=results/counts.json \
-                --node_anchored \
-                --use_neighborhood \
-                --k_hops 2 \
-                --degree_aware_sampling \
-                --engine igraph \
-                --n_workers 4 \
-                --timeout 60 \
-                --graph_type directed
+      # - name: Run pattern counter in Docker container
+      #   run: |
+      #     docker run --rm \
+      #       -v ${{ github.workspace }}:/app \
+      #       -e PYTHONUNBUFFERED=1 \
+      #       decoder-image:latest \
+      #       bash -c "
+      #         set -e
+      #         export PYTHONPATH=/app
+      #         echo 'Running pattern counter...'
+      #         python -m analyze.count_patterns \
+      #           --dataset=metta.pkl \
+      #           --queries_path=results/patterns.pkl \
+      #           --out_path=results/ \
+      #           --node_anchored \
 
-              echo 'Counting completed.'
-              ls -la /app/results
-            "
+      #         echo 'Counting completed.'
+      #         ls -la /app/results
+      #       "
       # - name: Run matcher in Docker container
       #  run: |
       #   docker run --rm \
