@@ -108,14 +108,20 @@ jobs:
             bash -c "
               set -e
               export PYTHONPATH=/app
-              echo 'Running pattern counter...'
+              echo 'Running optimized pattern counter...'
               python -m analyze.count_patterns \
-                --dataset=metta.pkl \
+                --dataset=directed.pkl \
                 --queries_path=results/patterns.pkl \
                 --out_path=results/counts.json \
                 --node_anchored \
-                --engine=igraph
-              
+                --use_neighborhood \
+                --k_hops 2 \
+                --degree_aware_sampling \
+                --engine igraph \
+                --n_workers 4 \
+                --timeout 60 \
+                --graph_type directed
+
               echo 'Counting completed.'
               ls -la /app/results
             "
