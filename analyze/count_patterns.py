@@ -633,8 +633,17 @@ def count_graphlets(queries, targets, args):
     queries_ig = None
     targets_ig = None
     if engine == "igraph":
+        print("Converting queries to igraph format...")
         queries_ig = [nx_to_igraph(q) for q in queries]
-        targets_ig = [nx_to_igraph(t) for t in targets]
+        
+        # Only pre-convert targets if NOT using neighborhood extraction
+        # When using neighborhoods, we convert small neighborhoods on-the-fly in workers
+        if not args.use_neighborhood:
+            print("Converting target graphs to igraph format...")
+            targets_ig = [nx_to_igraph(t) for t in targets]
+        else:
+            print("Skipping full target conversion - will extract neighborhoods on-the-fly")
+            targets_ig = [None for _ in targets]  # Placeholder
 
     inp = []
     for qi, q in enumerate(queries):
