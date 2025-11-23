@@ -37,6 +37,77 @@ import torch.multiprocessing as mp
 from sklearn.decomposition import PCA
 from itertools import combinations
 
+try:
+    from analyze.optimizations import (
+        extract_k_hop_neighborhood,
+        adaptive_anchor_sampling,
+        batch_anchor_pruning,
+        estimate_required_anchors
+    )
+except ImportError:
+    # Fallback implementations if optimizations.py not available
+    def extract_k_hop_neighborhood(G, anchor, k=2, max_nodes=100):
+        if anchor not in G:
+            return G.subgraph([])
+        neighborhood = {anchor}
+        current_layer = {anchor}
+        for hop in range(k):
+            next_layer = set()
+            for node in current_layer:
+                if G.is_directed():
+                    neighbors = set(G.successors(node)) | set(G.predecessors(node))
+                else:
+                    neighbors = set(G.neighbors(node))
+                next_layer.update(neighbors - neighborhood)
+            neighborhood.update(next_layer)
+            current_layer = next_layer
+            if len(neighborhood) >= max_nodes or not current_layer:
+                break
+        return G.subgraph(list(neighborhood)[:max_nodes])
+    
+    def adaptive_anchor_sampling(G, query_size, max_anchors=1000, strategy='degree_aware'):
+        if G.number_of_nodes() <= max_anchors:
+            return list(G.nodes())
+        if strategy == 'degree_aware':
+            degrees = dict(G.degree())
+            if not degrees:
+                return random.sample(list(G.nodes()), min(max_anchors, G.number_of_nodes()))
+            nodes = list(degrees.keys())
+            weights = [degrees[n] + 1 for n in nodes]
+            total_weight = sum(weights)
+            probs = [w / total_weight for w in weights]
+            sampled = random.choices(nodes, weights=probs, k=min(max_anchors, len(nodes)))
+            return list(set(sampled))
+        return random.sample(list(G.nodes()), min(max_anchors, G.number_of_nodes()))
+    
+    def batch_anchor_pruning(G, anchors, query, query_stats):
+        if not anchors:
+            return []
+        min_degree = min(query_stats['degree_seq']) if query_stats['degree_seq'] else 0
+        valid_anchors = []
+        for anchor in anchors:
+            if anchor not in G:
+                continue
+            if G.degree(anchor) < min_degree:
+                continue
+            if G.is_directed() and query.is_directed():
+                min_in = min(query_stats['in_degree_seq']) if query_stats['in_degree_seq'] else 0
+                min_out = min(query_stats['out_degree_seq']) if query_stats['out_degree_seq'] else 0
+                if G.in_degree(anchor) < min_in or G.out_degree(anchor) < min_out:
+                    continue
+            valid_anchors.append(anchor)
+        return valid_anchors
+    
+    def estimate_required_anchors(G, query, confidence=0.95):
+        n = G.number_of_nodes()
+        q = query.number_of_nodes()
+        if q <= 5:
+            return min(500, n // 100)
+        elif q <= 10:
+            return min(1000, n // 50)
+        else:
+            return min(5000, n // 10)
+
 MAX_SEARCH_TIME = 1800  
 MAX_MATCHES_PER_QUERY = 10000
 DEFAULT_SAMPLE_ANCHORS = 1000
@@ -51,13 +122,16 @@ _GLOBAL_TARGET_STATS = None
 _GLOBAL_ENGINE = None
 _GLOBAL_QUERIES_IG = None
 _GLOBAL_TARGETS_IG = None
+_GLOBAL_USE_NEIGHBORHOOD = False
+_GLOBAL_K_HOPS = 2
 
 def _init_worker(queries, targets, query_stats, target_stats,
-                 queries_ig, targets_ig, engine):
+                 queries_ig, targets_ig, engine, use_neighborhood=False, k_hops=2):
     """Initializer for worker processes: set global references."""
     global _GLOBAL_QUERIES, _GLOBAL_TARGETS
     global _GLOBAL_QUERY_STATS, _GLOBAL_TARGET_STATS
     global _GLOBAL_ENGINE, _GLOBAL_QUERIES_IG, _GLOBAL_TARGETS_IG
+    global _GLOBAL_USE_NEIGHBORHOOD, _GLOBAL_K_HOPS
 
     _GLOBAL_QUERIES = queries
     _GLOBAL_TARGETS = targets
@@ -67,6 +141,8 @@ def _init_worker(queries, targets, query_stats, target_stats,
     _GLOBAL_ENGINE = engine
     _GLOBAL_QUERIES_IG = queries_ig
     _GLOBAL_TARGETS_IG = targets_ig
+    _GLOBAL_USE_NEIGHBORHOOD = use_neighborhood
+    _GLOBAL_K_HOPS = k_hops
 
 def compute_graph_stats(G):
     """Compute graph statistics for filtering."""
@@ -143,6 +219,22 @@ def arg_parse():
         default='nx',
         choices=['nx', 'igraph'],
         help='Matching engine: NetworkX (nx) or igraph backend.'
+    )
+    parser.add_argument(
+        '--use_neighborhood',
+        action='store_true',
+        help='Extract k-hop neighborhood around anchors for faster VF2 (RECOMMENDED for large graphs)'
+    )
+    parser.add_argument(
+        '--k_hops',
+        type=int,
+        default=2,
+        help='Number of hops for neighborhood extraction (default: 2)'
+    )
+    parser.add_argument(
+        '--degree_aware_sampling',
+        action='store_true',
+        help='Sample anchors by degree (hubs preferred) instead of uniform sampling'
     )
     parser.set_defaults(dataset="enzymes",
                        queries_path="results/out-patterns.p",
@@ -399,6 +491,8 @@ def count_graphlets_helper(inp):
     query_stats = _GLOBAL_QUERY_STATS[q_idx]
     target_stats = _GLOBAL_TARGET_STATS[t_idx]
     engine = _GLOBAL_ENGINE
+    use_neighborhood = _GLOBAL_USE_NEIGHBORHOOD
+    k_hops = _GLOBAL_K_HOPS
 
     query_ig = None
     target_ig = None
@@ -413,8 +507,26 @@ def count_graphlets_helper(inp):
 
     query = query.copy()
     query.remove_edges_from(nx.selfloop_edges(query))
-    target = target.copy()
-    target.remove_edges_from(nx.selfloop_edges(target))
+    
+    # OPTIMIZATION: Extract k-hop neighborhood around anchor for large graphs
+    if use_neighborhood and node_anchored and anchor_or_none is not None:
+        # Only search in the k-hop neighborhood around the anchor
+        # This reduces search space from 400k nodes to ~100-500 nodes
+        target_local = extract_k_hop_neighborhood(
+            target, anchor_or_none, k=k_hops, 
+            max_nodes=min(500, query.number_of_nodes() * 20)
+        )
+        target_local = target_local.copy()
+        target_local.remove_edges_from(nx.selfloop_edges(target_local))
+        
+        # Convert to igraph if needed
+        if engine == "igraph" and target_local.number_of_nodes() > 0:
+            target_ig = nx_to_igraph(target_local)
+        
+        target = target_local
+    else:
+        target = target.copy()
+        target.remove_edges_from(nx.selfloop_edges(target))
 
     count = run_match_task(
         engine=engine,
@@ -545,10 +657,25 @@ def count_graphlets(queries, targets, args):
                 continue
                 
             if args.node_anchored:
+                # Smart anchor sampling
                 if t.number_of_nodes() > args.sample_anchors:
-                    anchors = random.sample(list(t.nodes), args.sample_anchors)
+                    if args.degree_aware_sampling:
+                        # Sample by degree (hubs more likely)
+                        anchors = adaptive_anchor_sampling(
+                            t, q.number_of_nodes(), 
+                            max_anchors=args.sample_anchors,
+                            strategy='degree_aware'
+                        )
+                    else:
+                        # Uniform sampling
+                        anchors = random.sample(list(t.nodes), args.sample_anchors)
                 else:
                     anchors = list(t.nodes)
+                
+                # Pre-filter anchors by degree
+                anchors = batch_anchor_pruning(t, anchors, q, q_stats)
+                
+                print(f"Query {qi} on target {ti}: {len(anchors)} valid anchors after pruning")
                     
                 for anchor in anchors:
                     inp.append((qi, ti, args.count_method, args.node_anchored, anchor, args.timeout))
@@ -562,7 +689,7 @@ def count_graphlets(queries, targets, args):
     with Pool(
         processes=args.n_workers,
         initializer=_init_worker,
-        initargs=(queries, targets, query_stats, target_stats, queries_ig, targets_ig, engine),
+        initargs=(queries, targets, query_stats, target_stats, queries_ig, targets_ig, engine, args.use_neighborhood, args.k_hops),
     ) as pool:
         for batch_start in range(0, len(inp), args.batch_size):
             batch_end = min(batch_start + args.batch_size, len(inp))
