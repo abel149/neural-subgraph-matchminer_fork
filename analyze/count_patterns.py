@@ -597,7 +597,9 @@ def count_graphlets(queries, targets, args):
     
     is_directed = any(g.is_directed() for g in queries + targets)
     if is_directed:
-        print("Detected directed graphs - using DiGraphMatcher")
+        print(f"Detected directed graphs - using {args.engine} backend")
+    else:
+        print(f"Detected undirected graphs - using {args.engine} backend")
     
     n_matches = load_checkpoint(args.checkpoint_file)
     
