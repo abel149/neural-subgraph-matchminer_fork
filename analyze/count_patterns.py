@@ -191,8 +191,9 @@ def can_be_isomorphic(query_stats, target_stats):
             query_stats['out_degree_seq'][0] > target_stats['out_degree_seq'][0]):
             return False
     
-    if query_stats['avg_degree'] > target_stats['avg_degree'] * 1.1:  
-        return False
+    # NOTE: We do NOT check average degree here!
+    # Motifs are often DENSER than the overall graph (e.g., triangles in sparse networks).
+    # This is expected and correct for motif mining.
     
     return True
 
@@ -655,6 +656,8 @@ def count_graphlets(queries, targets, args):
         for ti, t in enumerate(targets):
             t_stats = target_stats[ti]
             if not can_be_isomorphic(q_stats, t_stats):
+                print(f"Query {qi} filtered: q_nodes={q_stats['n_nodes']}, q_edges={q_stats['n_edges']}, "
+                      f"t_nodes={t_stats['n_nodes']}, t_edges={t_stats['n_edges']}")
                 continue
             
             task_id = f"{qi}_{ti}"
