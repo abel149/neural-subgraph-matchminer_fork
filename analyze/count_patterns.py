@@ -19,12 +19,6 @@ import torch_geometric.utils as pyg_utils
 
 import torch_geometric.nn as pyg_nn
 from matplotlib import cm
-
-from common import data
-from common import models
-from common import utils
-from subgraph_mining import decoder
-
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
@@ -43,10 +37,112 @@ import torch.multiprocessing as mp
 from sklearn.decomposition import PCA
 from itertools import combinations
 
+try:
+    from analyze.optimizations import (
+        extract_k_hop_neighborhood,
+        adaptive_anchor_sampling,
+        batch_anchor_pruning,
+        estimate_required_anchors
+    )
+except ImportError:
+    # Fallback implementations if optimizations.py not available
+    def extract_k_hop_neighborhood(G, anchor, k=2, max_nodes=100):
+        if anchor not in G:
+            return G.subgraph([])
+        neighborhood = {anchor}
+        current_layer = {anchor}
+        for hop in range(k):
+            next_layer = set()
+            for node in current_layer:
+                if G.is_directed():
+                    neighbors = set(G.successors(node)) | set(G.predecessors(node))
+                else:
+                    neighbors = set(G.neighbors(node))
+                next_layer.update(neighbors - neighborhood)
+            neighborhood.update(next_layer)
+            current_layer = next_layer
+            if len(neighborhood) >= max_nodes or not current_layer:
+                break
+        return G.subgraph(list(neighborhood)[:max_nodes])
+    
+    def adaptive_anchor_sampling(G, query_size, max_anchors=1000, strategy='degree_aware'):
+        if G.number_of_nodes() <= max_anchors:
+            return list(G.nodes())
+        if strategy == 'degree_aware':
+            degrees = dict(G.degree())
+            if not degrees:
+                return random.sample(list(G.nodes()), min(max_anchors, G.number_of_nodes()))
+            nodes = list(degrees.keys())
+            weights = [degrees[n] + 1 for n in nodes]
+            total_weight = sum(weights)
+            probs = [w / total_weight for w in weights]
+            sampled = random.choices(nodes, weights=probs, k=min(max_anchors, len(nodes)))
+            return list(set(sampled))
+        return random.sample(list(G.nodes()), min(max_anchors, G.number_of_nodes()))
+    
+    def batch_anchor_pruning(G, anchors, query, query_stats):
+        if not anchors:
+            return []
+        min_degree = min(query_stats['degree_seq']) if query_stats['degree_seq'] else 0
+        valid_anchors = []
+        for anchor in anchors:
+            if anchor not in G:
+                continue
+            if G.degree(anchor) < min_degree:
+                continue
+            if G.is_directed() and query.is_directed():
+                min_in = min(query_stats['in_degree_seq']) if query_stats['in_degree_seq'] else 0
+                min_out = min(query_stats['out_degree_seq']) if query_stats['out_degree_seq'] else 0
+                if G.in_degree(anchor) < min_in or G.out_degree(anchor) < min_out:
+                    continue
+            valid_anchors.append(anchor)
+        return valid_anchors
+    
+    def estimate_required_anchors(G, query, confidence=0.95):
+        n = G.number_of_nodes()
+        q = query.number_of_nodes()
+        if q <= 5:
+            return min(500, n // 100)
+        elif q <= 10:
+            return min(1000, n // 50)
+        else:
+            return min(5000, n // 10)
+
 MAX_SEARCH_TIME = 1800  
 MAX_MATCHES_PER_QUERY = 10000
 DEFAULT_SAMPLE_ANCHORS = 1000
 CHECKPOINT_INTERVAL = 100  
+
+# Global caches for worker processes
+_GLOBAL_QUERIES = None
+_GLOBAL_TARGETS = None
+_GLOBAL_QUERY_STATS = None
+_GLOBAL_TARGET_STATS = None
+
+_GLOBAL_ENGINE = None
+_GLOBAL_QUERIES_IG = None
+_GLOBAL_TARGETS_IG = None
+_GLOBAL_USE_NEIGHBORHOOD = False
+_GLOBAL_K_HOPS = 2
+
+def _init_worker(queries, targets, query_stats, target_stats,
+                 queries_ig, targets_ig, engine, use_neighborhood=False, k_hops=2):
+    """Initializer for worker processes: set global references."""
+    global _GLOBAL_QUERIES, _GLOBAL_TARGETS
+    global _GLOBAL_QUERY_STATS, _GLOBAL_TARGET_STATS
+    global _GLOBAL_ENGINE, _GLOBAL_QUERIES_IG, _GLOBAL_TARGETS_IG
+    global _GLOBAL_USE_NEIGHBORHOOD, _GLOBAL_K_HOPS
+
+    _GLOBAL_QUERIES = queries
+    _GLOBAL_TARGETS = targets
+    _GLOBAL_QUERY_STATS = query_stats
+    _GLOBAL_TARGET_STATS = target_stats
+
+    _GLOBAL_ENGINE = engine
+    _GLOBAL_QUERIES_IG = queries_ig
+    _GLOBAL_TARGETS_IG = targets_ig
+    _GLOBAL_USE_NEIGHBORHOOD = use_neighborhood
+    _GLOBAL_K_HOPS = k_hops
 
 def compute_graph_stats(G):
     """Compute graph statistics for filtering."""
@@ -95,8 +191,9 @@ def can_be_isomorphic(query_stats, target_stats):
             query_stats['out_degree_seq'][0] > target_stats['out_degree_seq'][0]):
             return False
     
-    if query_stats['avg_degree'] > target_stats['avg_degree'] * 1.1:  
-        return False
+    # NOTE: We do NOT check average degree here!
+    # Motifs are often DENSER than the overall graph (e.g., triangles in sparse networks).
+    # This is expected and correct for motif mining.
     
     return True
 
@@ -117,12 +214,36 @@ def arg_parse():
     parser.add_argument('--use_sampling', action="store_true", help='Use node sampling for very large graphs')
     parser.add_argument('--graph_type', type=str, default='auto', choices=['directed', 'undirected', 'auto'],
                        help='Graph type: directed, undirected, or auto-detect')
+    parser.add_argument(
+        '--engine',
+        type=str,
+        default='nx',
+        choices=['nx', 'igraph'],
+        help='Matching engine: NetworkX (nx) or igraph backend.'
+    )
+    parser.add_argument(
+        '--use_neighborhood',
+        action='store_true',
+        help='Extract k-hop neighborhood around anchors for faster VF2 (RECOMMENDED for large graphs)'
+    )
+    parser.add_argument(
+        '--k_hops',
+        type=int,
+        default=2,
+        help='Number of hops for neighborhood extraction (default: 2)'
+    )
+    parser.add_argument(
+        '--degree_aware_sampling',
+        action='store_true',
+        help='Sample anchors by degree (hubs preferred) instead of uniform sampling'
+    )
     parser.set_defaults(dataset="enzymes",
                        queries_path="results/out-patterns.p",
                        out_path="results/counts.json",
                        n_workers=4,
                        count_method="bin",
-                       baseline="none")
+                       baseline="none",
+                       node_anchored=True)
     return parser.parse_args()
 
 def load_networkx_graph(filepath, directed=None):
@@ -168,100 +289,265 @@ def load_networkx_graph(filepath, directed=None):
                 
         return graph
 
-def count_graphlets_helper(inp):
-    i, query, target, method, node_anchored, anchor_or_none, timeout = inp
-    
-    start_time = time.time()
-    
-    effective_timeout = min(timeout, 600)  
-    
-    query_stats = compute_graph_stats(query)
-    target_stats = compute_graph_stats(target)
-    if not can_be_isomorphic(query_stats, target_stats):
-        return i, 0
-    
-    query = query.copy()
-    query.remove_edges_from(nx.selfloop_edges(query))
-    target = target.copy()
-    target.remove_edges_from(nx.selfloop_edges(target))
+def nx_to_igraph(G):
+    """Convert a NetworkX graph to an igraph Graph, preserving node/edge attributes.
 
-    count = 0
+    This is only used when --engine=igraph is requested. Importing igraph here
+    keeps the dependency optional for normal NetworkX runs.
+    """
     try:
-        import signal
-        
-        def timeout_handler(signum, frame):
-            raise TimeoutError(f"Task {i} timed out after {effective_timeout} seconds")
-            
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(effective_timeout)
-        
+        import igraph as ig
+    except ImportError as e:
+        raise ImportError("igraph is required for --engine=igraph but is not installed") from e
+
+    nodes = list(G.nodes())
+    nx_to_idx = {n: i for i, n in enumerate(nodes)}
+    directed = G.is_directed()
+
+    g = ig.Graph(directed=directed)
+    g.add_vertices(len(nodes))
+
+    for n, i in nx_to_idx.items():
+        # Preserve original NetworkX node id for later lookup (e.g., anchors)
+        g.vs[i]["nx_id"] = n
+        for attr, val in G.nodes[n].items():
+            g.vs[i][attr] = val
+
+    for u, v, attrs in G.edges(data=True):
+        g.add_edge(nx_to_idx[u], nx_to_idx[v])
+        eid = g.get_eid(nx_to_idx[u], nx_to_idx[v])
+        for attr, val in attrs.items():
+            g.es[eid][attr] = val
+
+    return g
+
+def match_task_nx(query, target, method, node_anchored,
+                  anchor_or_none, timeout, q_idx, start_time):
+    """NetworkX-based matching for a single (query, target, anchor) task."""
+    count = 0
+
+    try:
         if method == "freq":
             if query.is_directed():
                 ismags = nx.isomorphism.DiGraphMatcher(query, query)
             else:
                 ismags = nx.isomorphism.ISMAGS(query, query)
             n_symmetries = len(list(ismags.isomorphisms_iter(symmetry=False)))
-        
+
         if method == "bin":
             if node_anchored:
                 nx.set_node_attributes(target, 0, name="anchor")
-                target.nodes[anchor_or_none]["anchor"] = 1
-                
+                if anchor_or_none in target:
+                    target.nodes[anchor_or_none]["anchor"] = 1
+
                 if target.is_directed():
-                    matcher = iso.DiGraphMatcher(target, query,
-                        node_match=iso.categorical_node_match(["anchor"], [0]))
+                    matcher = iso.DiGraphMatcher(
+                        target, query,
+                        node_match=iso.categorical_node_match(["anchor"], [0])
+                    )
                 else:
-                    matcher = iso.GraphMatcher(target, query,
-                        node_match=iso.categorical_node_match(["anchor"], [0]))
-                
+                    matcher = iso.GraphMatcher(
+                        target, query,
+                        node_match=iso.categorical_node_match(["anchor"], [0])
+                    )
+
                 if time.time() - start_time > timeout:
-                    print(f"Timeout on query {i} before isomorphism check")
-                    return i, 0
-                
+                    print(f"Timeout on query {q_idx} before isomorphism check")
+                    return 0
+
                 count = int(matcher.subgraph_is_isomorphic())
             else:
                 if target.is_directed():
                     matcher = iso.DiGraphMatcher(target, query)
                 else:
                     matcher = iso.GraphMatcher(target, query)
-                
+
                 if time.time() - start_time > timeout:
-                    print(f"Timeout on query {i} before isomorphism check")
-                    return i, 0
-                
+                    print(f"Timeout on query {q_idx} before isomorphism check")
+                    return 0
+
                 count = int(matcher.subgraph_is_isomorphic())
         elif method == "freq":
             if target.is_directed():
                 matcher = iso.DiGraphMatcher(target, query)
             else:
                 matcher = iso.GraphMatcher(target, query)
-            
+
             count = 0
             for _ in matcher.subgraph_isomorphisms_iter():
                 if time.time() - start_time > timeout:
-                    print(f"Timeout during isomorphism iteration for query {i}")
+                    print(f"Timeout during isomorphism iteration for query {q_idx}")
                     break
                 count += 1
                 if count >= MAX_MATCHES_PER_QUERY:
                     break
-            
+
             if method == "freq" and n_symmetries > 0:
                 count = count / n_symmetries
-        
-        signal.alarm(0)
-            
+
     except TimeoutError as e:
-        print(f"Task {i} timed out: {str(e)}")
+        print(f"Task {q_idx} timed out: {str(e)}")
         count = 0
     except Exception as e:
-        print(f"Error processing query {i}: {str(e)}")
+        print(f"Error processing query {q_idx}: {str(e)}")
         count = 0
+
+    return count
+
+
+def match_task_igraph(query_ig, target_ig, method, node_anchored,
+                      anchor_or_none, timeout, q_idx, start_time):
+    """igraph-based matching for a single (query, target, anchor) task.
+
+    Currently supports only method=="bin". For other methods, falls back to
+    NotImplementedError so behavior is explicit.
+    """
+    try:
+        import igraph as ig  # noqa: F401  # imported for side-effects / type
+    except ImportError as e:
+        raise ImportError("igraph is required for --engine=igraph but is not installed") from e
+
+    if method != "bin":
+        raise NotImplementedError("igraph backend currently supports only count_method='bin'")
+
+    # Non-anchored case: simple subgraph existence check.
+    # Use subisomorphic_vf2 to avoid enumerating all mappings.
+    if not node_anchored:
+        is_subiso = target_ig.subisomorphic_vf2(query_ig)
+        elapsed = time.time() - start_time
+        if elapsed > timeout:
+            print(f"[igraph] Timeout on query {q_idx} after VF2 ({elapsed:.2f}s)")
+            return 0
+        return int(bool(is_subiso))
+
+    # Anchored case: enforce that the query's anchor node maps to the given target anchor
+    # We assume that query_ig vertices already carry an 'anchor' attribute
+    # consistent with the NetworkX version.
+
+    # Find target vertex index corresponding to anchor_or_none using stored nx_id
+    anchor_idx = None
+    for v in target_ig.vs:
+        if "nx_id" in v.attributes() and v["nx_id"] == anchor_or_none:
+            anchor_idx = v.index
+            break
+
+    if anchor_idx is None:
+        # Anchor not present in this target
+        return 0
+
+    # Prepare anchor attributes: 1 for anchor, 0 otherwise
+    # For target: only the chosen anchor vertex has anchor==1
+    anchor_vals_target = [0] * target_ig.vcount()
+    anchor_vals_target[anchor_idx] = 1
+
+    # For query: rely on any existing 'anchor' attribute, defaulting to 0
+    anchor_vals_query = []
+    for v in query_ig.vs:
+        val = v["anchor"] if "anchor" in v.attributes() else 0
+        anchor_vals_query.append(val)
+
+    # Run VF2 with color constraints based on anchor values.
+    # color1/color2 are lists of integers that must match between mapped vertices.
+    is_subiso = target_ig.subisomorphic_vf2(
+        query_ig,
+        color1=anchor_vals_target,
+        color2=anchor_vals_query,
+    )
+
+    elapsed = time.time() - start_time
+    if elapsed > timeout:
+        print(f"[igraph] Timeout on query {q_idx} after VF2 ({elapsed:.2f}s)")
+        return 0
+
+    # Any valid mapping means at least one anchored match
+    return int(bool(is_subiso))
+
+
+def run_match_task(engine,
+                   query, target,
+                   query_ig, target_ig,
+                   method, node_anchored,
+                   anchor_or_none, timeout,
+                   q_idx, start_time):
+    """Dispatch a single matching task to the selected backend."""
+    if engine == "nx":
+        return match_task_nx(
+            query, target, method, node_anchored,
+            anchor_or_none, timeout, q_idx, start_time
+        )
+    elif engine == "igraph":
+        return match_task_igraph(
+            query_ig, target_ig, method, node_anchored,
+            anchor_or_none, timeout, q_idx, start_time
+        )
+    else:
+        raise ValueError(f"Unknown engine: {engine}")
+
+
+def count_graphlets_helper(inp):
+    q_idx, t_idx, method, node_anchored, anchor_or_none, timeout = inp
+
+    query = _GLOBAL_QUERIES[q_idx]
+    target = _GLOBAL_TARGETS[t_idx]
+    query_stats = _GLOBAL_QUERY_STATS[q_idx]
+    target_stats = _GLOBAL_TARGET_STATS[t_idx]
+    engine = _GLOBAL_ENGINE
+    use_neighborhood = _GLOBAL_USE_NEIGHBORHOOD
+    k_hops = _GLOBAL_K_HOPS
+
+    query_ig = None
+    target_ig = None
+    if engine == "igraph":
+        query_ig = _GLOBAL_QUERIES_IG[q_idx]
+        target_ig = _GLOBAL_TARGETS_IG[t_idx]
+
+    start_time = time.time()
+
+    if not can_be_isomorphic(query_stats, target_stats):
+        return q_idx, 0
+
+    query = query.copy()
+    query.remove_edges_from(nx.selfloop_edges(query))
+    
+    # OPTIMIZATION: Extract k-hop neighborhood around anchor for large graphs
+    if use_neighborhood and node_anchored and anchor_or_none is not None:
+        # Only search in the k-hop neighborhood around the anchor
+        # This reduces search space from 400k nodes to ~100-500 nodes
+        target_local = extract_k_hop_neighborhood(
+            target, anchor_or_none, k=k_hops, 
+            max_nodes=min(500, query.number_of_nodes() * 20)
+        )
+        target_local = target_local.copy()
+        target_local.remove_edges_from(nx.selfloop_edges(target_local))
         
+        # Convert to igraph if needed
+        if engine == "igraph" and target_local.number_of_nodes() > 0:
+            target_ig = nx_to_igraph(target_local)
+        
+        target = target_local
+    else:
+        target = target.copy()
+        target.remove_edges_from(nx.selfloop_edges(target))
+
+    count = run_match_task(
+        engine=engine,
+        query=query,
+        target=target,
+        query_ig=query_ig,
+        target_ig=target_ig,
+        method=method,
+        node_anchored=node_anchored,
+        anchor_or_none=anchor_or_none,
+        timeout=timeout,
+        q_idx=q_idx,
+        start_time=start_time,
+    )
+
     processing_time = time.time() - start_time
-    if processing_time > 10: 
-        print(f"Query {i} processed in {processing_time:.2f} seconds with count {count}")
-        
-    return i, count
+    if processing_time > 10:
+        print(f"Query {q_idx} processed in {processing_time:.2f} seconds with count {count}")
+
+    return q_idx, count
 
 def save_checkpoint(n_matches, checkpoint_file):
     with open(checkpoint_file, 'w') as f:
@@ -312,7 +598,9 @@ def count_graphlets(queries, targets, args):
     
     is_directed = any(g.is_directed() for g in queries + targets)
     if is_directed:
-        print("Detected directed graphs - using DiGraphMatcher")
+        print(f"Detected directed graphs - using {args.engine} backend")
+    else:
+        print(f"Detected undirected graphs - using {args.engine} backend")
     
     n_matches = load_checkpoint(args.checkpoint_file)
     
@@ -337,22 +625,51 @@ def count_graphlets(queries, targets, args):
                 sampled_targets.append(target)
         targets = sampled_targets
         print(f"After sampling: {len(targets)} target graphs to process")
+
+    query_stats = [compute_graph_stats(q) for q in queries]
+    target_stats = [compute_graph_stats(t) for t in targets]
+
+    engine = args.engine
+
+    # Debug: Print query statistics
+    print("\n=== Query Pattern Statistics ===")
+    for qi, q in enumerate(queries):
+        q_stat = query_stats[qi]
+        print(f"Query {qi}: {q_stat['n_nodes']} nodes, {q_stat['n_edges']} edges, "
+              f"max_deg={q_stat['degree_seq'][0] if q_stat['degree_seq'] else 0}, "
+              f"avg_deg={q_stat['avg_degree']:.2f}")
+    print("================================\n")
     
-    with Pool(processes=args.n_workers) as pool:
-        target_stats = pool.map(compute_graph_stats, targets)
-        query_stats = pool.map(compute_graph_stats, queries)
-    
+    queries_ig = None
+    targets_ig = None
+    if engine == "igraph":
+        print("Converting queries to igraph format...")
+        queries_ig = [nx_to_igraph(q) for q in queries]
+        
+        # Only pre-convert targets if NOT using neighborhood extraction
+        # When using neighborhoods, we convert small neighborhoods on-the-fly in workers
+        if not args.use_neighborhood:
+            print("Converting target graphs to igraph format...")
+            targets_ig = [nx_to_igraph(t) for t in targets]
+        else:
+            print("Skipping full target conversion - will extract neighborhoods on-the-fly")
+            targets_ig = [None for _ in targets]  # Placeholder
+
     inp = []
-    for i, (query, q_stats) in enumerate(zip(queries, query_stats)):
-        if query.number_of_nodes() > args.max_query_size:
-            print(f"Skipping query {i}: exceeds max size {args.max_query_size}")
+    for qi, q in enumerate(queries):
+        if q.number_of_nodes() > args.max_query_size:
+            print(f"Skipping query {qi}: exceeds max size {args.max_query_size}")
             continue
-            
-        for t_idx, (target, t_stats) in enumerate(zip(targets, target_stats)):
+        q_stats = query_stats[qi]
+
+        for ti, t in enumerate(targets):
+            t_stats = target_stats[ti]
             if not can_be_isomorphic(q_stats, t_stats):
+                print(f"Query {qi} filtered: q_nodes={q_stats['n_nodes']}, q_edges={q_stats['n_edges']}, "
+                      f"t_nodes={t_stats['n_nodes']}, t_edges={t_stats['n_edges']}")
                 continue
             
-            task_id = f"{i}_{t_idx}"
+            task_id = f"{qi}_{ti}"
             
             if task_id in problematic_tasks:
                 print(f"Skipping known problematic task {task_id}")
@@ -363,23 +680,40 @@ def count_graphlets(queries, targets, args):
                 continue
                 
             if args.node_anchored:
-                if target.number_of_nodes() > args.sample_anchors:
-                    anchors = random.sample(list(target.nodes), args.sample_anchors)
+                # Smart anchor sampling
+                if t.number_of_nodes() > args.sample_anchors:
+                    if args.degree_aware_sampling:
+                        # Sample by degree (hubs more likely)
+                        anchors = adaptive_anchor_sampling(
+                            t, q.number_of_nodes(), 
+                            max_anchors=args.sample_anchors,
+                            strategy='degree_aware'
+                        )
+                    else:
+                        # Uniform sampling
+                        anchors = random.sample(list(t.nodes), args.sample_anchors)
                 else:
-                    anchors = list(target.nodes)
+                    anchors = list(t.nodes)
+                
+                # Pre-filter anchors by degree
+                anchors = batch_anchor_pruning(t, anchors, q, q_stats)
+                
+                print(f"Query {qi} on target {ti}: {len(anchors)} valid anchors after pruning")
                     
                 for anchor in anchors:
-                    inp.append((i, query, target, args.count_method, args.node_anchored, anchor, 
-                             args.timeout))
+                    inp.append((qi, ti, args.count_method, args.node_anchored, anchor, args.timeout))
             else:
-                inp.append((i, query, target, args.count_method, args.node_anchored, None, 
-                         args.timeout))
+                inp.append((qi, ti, args.count_method, args.node_anchored, None, args.timeout))
     
     print(f"Generated {len(inp)} tasks after filtering")
     n_done = 0
     last_checkpoint = time.time()
    
-    with Pool(processes=args.n_workers) as pool:
+    with Pool(
+        processes=args.n_workers,
+        initializer=_init_worker,
+        initargs=(queries, targets, query_stats, target_stats, queries_ig, targets_ig, engine, args.use_neighborhood, args.k_hops),
+    ) as pool:
         for batch_start in range(0, len(inp), args.batch_size):
             batch_end = min(batch_start + args.batch_size, len(inp))
             batch = inp[batch_start:batch_end]
@@ -557,7 +891,7 @@ def main():
         dataset = [graph]
     elif args.dataset.startswith('plant-'):
         size = int(args.dataset.split("-")[-1])
-        dataset = decoder.make_plant_dataset(size)
+       # dataset = decoder.make_plant_dataset(size)
     elif args.dataset == "analyze":
         with open("results/analyze.p", "rb") as f:
             cand_patterns, _ = pickle.load(f)
@@ -598,7 +932,9 @@ def main():
     print(f"Loaded {len(queries)} query patterns")
     print(f"Query graph type: {'directed' if queries[0].is_directed() else 'undirected'}")
     print(f"Target graph type: {'directed' if targets[0].is_directed() else 'undirected'}")
-
+    # ---- start timing the counting phase ----
+    overall_start = time.time()
+    
     if args.baseline == "exact":
         print("Using exact counting method")
         n_matches = count_graphlets(queries, targets, args)
@@ -610,11 +946,13 @@ def main():
             node_anchored=args.node_anchored, method=args.baseline)
         query_lens = [len(q) for q in baseline_queries]
         n_matches = count_graphlets(baseline_queries, targets, args)
-            
+    
+    total_time = time.time() - overall_start
+    print(f"Total counting time: {total_time:.2f} seconds")
+    # ---- end timing ----    
     with open(args.out_path, "w") as f:
         json.dump((query_lens, n_matches, []), f)
     print(f"Results saved to {args.out_path}")
-
 
 
 if __name__ == "__main__":
