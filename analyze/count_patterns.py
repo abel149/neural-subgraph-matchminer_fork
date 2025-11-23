@@ -631,6 +631,15 @@ def count_graphlets(queries, targets, args):
 
     engine = args.engine
 
+    # Debug: Print query statistics
+    print("\n=== Query Pattern Statistics ===")
+    for qi, q in enumerate(queries):
+        q_stat = query_stats[qi]
+        print(f"Query {qi}: {q_stat['n_nodes']} nodes, {q_stat['n_edges']} edges, "
+              f"max_deg={q_stat['degree_seq'][0] if q_stat['degree_seq'] else 0}, "
+              f"avg_deg={q_stat['avg_degree']:.2f}")
+    print("================================\n")
+    
     queries_ig = None
     targets_ig = None
     if engine == "igraph":
