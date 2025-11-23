@@ -118,12 +118,12 @@ jobs:
                 --queries_path=results/patterns.pkl \
                 --out_path=results/counts.json \
                 --node_anchored \
+                --use_neighborhood \
+                --k_hops 4 \
                 --degree_aware_sampling \
                 --sample_anchors 1000 \
-                --engine nx \
+                --engine igraph \
                 --n_workers 4 \
-                --batch_size 50 \
-                --timeout 120 \
                 --graph_type directed
 
               echo 'Counting completed.'
