@@ -118,9 +118,9 @@ jobs:
                 --out_path=results/counts.json \
                 --node_anchored \
                 --use_neighborhood \
-                --k_hops 2 \
+                --k_hops 3 \
                 --degree_aware_sampling \
-                --sample_anchors 100 \
+                --sample_anchors 1000 \
                 --engine igraph \
                 --n_workers 4 \
                 --batch_size 50 \
