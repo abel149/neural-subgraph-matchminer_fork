@@ -90,17 +90,25 @@ jobs:
             bash -c "
               set -e
               export PYTHONPATH=/app
-              echo 'Running pattern counter...'
+              echo 'Running optimized pattern counter...'
               python -m analyze.count_patterns \
-                --dataset=metta.pkl \
+                --dataset=directed.pkl \
                 --queries_path=results/patterns.pkl \
                 --out_path=results/counts.json \
                 --node_anchored \
-                --engine=igraph
-              
-              echo 'Counting completed.'
-              ls -la /app/results
-            "
+                --use_neighborhood \
+                --k_hops 2 \
+                --degree_aware_sampling \
+                --sample_anchors 500 \
+                --engine igraph \
+                --n_workers 4 \
+                --batch_size 100 \
+                --timeout 60 \
+                --graph_type directed
+
+            echo 'Counting completed.'
+            ls -la /app/results
+          "
       # - name: Run matcher in Docker container
       #  run: |
       #   docker run --rm \
