@@ -110,7 +110,7 @@ except ImportError:
 
 MAX_SEARCH_TIME = 1800  
 MAX_MATCHES_PER_QUERY = 10000
-DEFAULT_SAMPLE_ANCHORS = 1000
+DEFAULT_SAMPLE_ANCHORS = 2000
 CHECKPOINT_INTERVAL = 100  
 
 # Global caches for worker processes
@@ -512,10 +512,14 @@ def count_graphlets_helper(inp):
     # OPTIMIZATION: Extract k-hop neighborhood around anchor for large graphs
     if use_neighborhood and node_anchored and anchor_or_none is not None:
         # Only search in the k-hop neighborhood around the anchor
-        # This reduces search space from 400k nodes to ~100-500 nodes
+        # Use adaptive neighborhood size: larger queries need more hops in sparse graphs
+        query_size = query.number_of_nodes()
+        adaptive_k = max(k_hops, query_size - 1)  # At least query_size-1 hops for connectivity
+        max_neighborhood_size = min(1000, query_size * 50)  # Larger buffer for sparse graphs
+        
         target_local = extract_k_hop_neighborhood(
-            target, anchor_or_none, k=k_hops, 
-            max_nodes=min(500, query.number_of_nodes() * 20)
+            target, anchor_or_none, k=adaptive_k, 
+            max_nodes=max_neighborhood_size
         )
         target_local = target_local.copy()
         target_local.remove_edges_from(nx.selfloop_edges(target_local))
