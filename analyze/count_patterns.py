@@ -83,18 +83,15 @@ except ImportError:
     def batch_anchor_pruning(G, anchors, query, query_stats):
         if not anchors:
             return []
-        min_degree = min(query_stats['degree_seq']) if query_stats['degree_seq'] else 0
+        # LESS AGGRESSIVE: Only filter out anchors with degree 0 or invalid nodes
+        # Don't filter by minimum degree to avoid false negatives
         valid_anchors = []
         for anchor in anchors:
             if anchor not in G:
                 continue
-            if G.degree(anchor) < min_degree:
+            # Only exclude isolated nodes (degree 0) which cannot match any pattern
+            if G.degree(anchor) == 0 and query_stats['degree_seq'] and query_stats['degree_seq'][-1] > 0:
                 continue
-            if G.is_directed() and query.is_directed():
-                min_in = min(query_stats['in_degree_seq']) if query_stats['in_degree_seq'] else 0
-                min_out = min(query_stats['out_degree_seq']) if query_stats['out_degree_seq'] else 0
-                if G.in_degree(anchor) < min_in or G.out_degree(anchor) < min_out:
-                    continue
             valid_anchors.append(anchor)
         return valid_anchors
     
@@ -110,7 +107,7 @@ except ImportError:
 
 MAX_SEARCH_TIME = 1800  
 MAX_MATCHES_PER_QUERY = 10000
-DEFAULT_SAMPLE_ANCHORS = 2000
+DEFAULT_SAMPLE_ANCHORS = 2000  # OPTIMIZATION: More anchors = faster to find matches
 CHECKPOINT_INTERVAL = 100  
 
 # Global caches for worker processes
@@ -191,9 +188,9 @@ def can_be_isomorphic(query_stats, target_stats):
             query_stats['out_degree_seq'][0] > target_stats['out_degree_seq'][0]):
             return False
     
-    # NOTE: We do NOT check average degree here!
-    # Motifs are often DENSER than the overall graph (e.g., triangles in sparse networks).
-    # This is expected and correct for motif mining.
+    # Check average degree
+    if query_stats['avg_degree'] > target_stats['avg_degree'] * 1.1:  
+        return False
     
     return True
 
@@ -235,15 +232,19 @@ def arg_parse():
     parser.add_argument(
         '--degree_aware_sampling',
         action='store_true',
-        help='Sample anchors by degree (hubs preferred) instead of uniform sampling'
+        help='Use degree-aware sampling for anchor nodes'
     )
-    parser.set_defaults(dataset="enzymes",
-                       queries_path="results/out-patterns.p",
-                       out_path="results/counts.json",
+    parser.set_defaults(dataset="metta.pkl",
+                       queries_path="patterns.pkl",
+                       out_path="counts.json",
                        n_workers=4,
                        count_method="bin",
                        baseline="none",
-                       node_anchored=True)
+                       node_anchored=True,
+                       use_neighborhood=False,  # Disabled by default for correctness
+                       k_hops=2,
+                       degree_aware_sampling=False,  # Use uniform sampling for correctness
+                       engine="nx")  # NetworkX - igraph has conversion overhead on small graphs
     return parser.parse_args()
 
 def load_networkx_graph(filepath, directed=None):
@@ -509,13 +510,17 @@ def count_graphlets_helper(inp):
     query = query.copy()
     query.remove_edges_from(nx.selfloop_edges(query))
     
-    # OPTIMIZATION: Extract k-hop neighborhood around anchor for large graphs
-    if use_neighborhood and node_anchored and anchor_or_none is not None:
+    # OPTIMIZATION: Extract k-hop neighborhood around anchor for VERY large graphs only
+    # Only use this optimization when the target is extremely large (>50k nodes)
+    # to avoid missing valid matches in smaller graphs
+    if use_neighborhood and node_anchored and anchor_or_none is not None and target.number_of_nodes() > 50000:
         # Only search in the k-hop neighborhood around the anchor
-        # Use adaptive neighborhood size: larger queries need more hops in sparse graphs
+        # Use very conservative neighborhood size to ensure we don't miss matches
         query_size = query.number_of_nodes()
-        adaptive_k = max(k_hops, query_size - 1)  # At least query_size-1 hops for connectivity
-        max_neighborhood_size = min(1000, query_size * 50)  # Larger buffer for sparse graphs
+        # Conservative k: use much larger value for sparse graphs
+        adaptive_k = max(k_hops * 2, query_size * 2)  # Double the hops for safety
+        # Much larger neighborhood size to avoid false negatives
+        max_neighborhood_size = min(10000, query_size * 200)  # Very conservative buffer
         
         target_local = extract_k_hop_neighborhood(
             target, anchor_or_none, k=adaptive_k, 
@@ -524,11 +529,15 @@ def count_graphlets_helper(inp):
         target_local = target_local.copy()
         target_local.remove_edges_from(nx.selfloop_edges(target_local))
         
-        # Convert to igraph if needed
-        if engine == "igraph" and target_local.number_of_nodes() > 0:
-            target_ig = nx_to_igraph(target_local)
-        
-        target = target_local
+        # Safety check: if neighborhood is too small, use full graph
+        if target_local.number_of_nodes() < query_size * 10:
+            target = target.copy()
+            target.remove_edges_from(nx.selfloop_edges(target))
+        else:
+            # Convert to igraph if needed
+            if engine == "igraph" and target_local.number_of_nodes() > 0:
+                target_ig = nx_to_igraph(target_local)
+            target = target_local
     else:
         target = target.copy()
         target.remove_edges_from(nx.selfloop_edges(target))
@@ -894,8 +903,11 @@ def main():
                 graph.add_edge(int(a), int(b))
         dataset = [graph]
     elif args.dataset.startswith('plant-'):
+        # Lazy import to avoid pulling in heavy training deps (deepsnap, torch_sparse)
+        # when just running the counter on arbitrary graphs.
+        from subgraph_mining import decoder
         size = int(args.dataset.split("-")[-1])
-       # dataset = decoder.make_plant_dataset(size)
+        dataset = decoder.make_plant_dataset(size)
     elif args.dataset == "analyze":
         with open("results/analyze.p", "rb") as f:
             cand_patterns, _ = pickle.load(f)
@@ -953,10 +965,19 @@ def main():
     
     total_time = time.time() - overall_start
     print(f"Total counting time: {total_time:.2f} seconds")
-    # ---- end timing ----    
-    with open(args.out_path, "w") as f:
-        json.dump((query_lens, n_matches, []), f)
-    print(f"Results saved to {args.out_path}")
+    # ---- end timing ----         
+    # Save results - match original format
+    query_lens = [q.number_of_nodes() for q in queries]
+    output_file = os.path.join(args.out_path, "counts.json")
+    
+    # Ensure output directory exists
+    os.makedirs(args.out_path, exist_ok=True)
+    
+    with open(output_file, "w") as f:
+        json.dump({"query_lengths": query_lens, "counts": n_matches, "metadata": {}}, f)
+    
+    print(f"Results saved to {output_file}")
+    print("=== Completed ===")
 
 
 if __name__ == "__main__":

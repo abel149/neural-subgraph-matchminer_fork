@@ -122,7 +122,6 @@ jobs:
                 --k_hops 4 \
                 --degree_aware_sampling \
                 --sample_anchors 2000 \
-                --engine igraph \
                 --n_workers 4 \
                 --graph_type directed
                 
