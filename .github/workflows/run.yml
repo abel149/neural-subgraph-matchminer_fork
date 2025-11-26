@@ -118,11 +118,6 @@ jobs:
                 --queries_path=results/patterns.pkl \
                 --out_path=results/counts.json \
                 --node_anchored \
-                --use_neighborhood \
-                --k_hops 4 \
-                --degree_aware_sampling \
-                --sample_anchors 1000 \
-                --n_workers 4 \
                 --graph_type directed
                 
                 
